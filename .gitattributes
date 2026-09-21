@@ -1,0 +1,4 @@
+*.pdf binary
+
+# Preserve upstream license bytes and their recorded checksums.
+docs/release/*-notices/texts/** -text -whitespace

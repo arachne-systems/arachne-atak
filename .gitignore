@@ -1,0 +1,28 @@
+.cache/
+.gradle/
+.kotlin/
+**/build/
+**/local.properties
+/docs/brand/fonts-local/
+**/target/
+
+# TAK Gradle generated SDK/artifact state
+.takdev/
+
+/dist/
+**/__pycache__/
+graphify-out/
+
+# Locally supplied TAK SDKs and signing material; never source distribution
+ATAK-CIV-*-SDK*
+**/main.jar
+**/atak-javadoc.jar
+**/atak-gradle-takdev.jar
+**/android_keystore
+*.apk
+*.aar
+*.keystore
+*.jks
+
+# Claude Code agent worktrees
+.claude/

@@ -1,0 +1,7 @@
+# This is a Gradle generated file for dependency locking.
+# Manual edits can break the build and are not advised.
+# This file is expected to be part of source control.
+com.google.zxing:core:3.5.4=civReleaseRuntimeClasspath
+org.jetbrains.kotlin:kotlin-stdlib:2.1.10=civReleaseRuntimeClasspath
+org.jetbrains:annotations:13.0=civReleaseRuntimeClasspath
+empty=

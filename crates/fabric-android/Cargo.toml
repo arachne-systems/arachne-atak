@@ -1,0 +1,26 @@
+[package]
+name = "fabric-android"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Explicit diagnostic artifacts only; never enabled by ordinary release builds.
+iroh-diagnostics = []
+
+[dependencies]
+arachne-runtime = { path = "../../core/crates/arachne-runtime" }
+arachne-security = { path = "../../core/crates/arachne-security" }
+jni = "=0.21.1"
+zeroize = "1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry"] }
+
+[dev-dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry"] }

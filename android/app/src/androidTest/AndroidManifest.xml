@@ -1,0 +1,10 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application>
+        <!-- Test-only foreground clipboard bridge; never instruments the plugin. -->
+        <activity android:name="dev.arachne.atak.ClipboardBridgeActivity"
+            android:exported="true" android:theme="@android:style/Theme.Material.NoActionBar" />
+        <activity android:name="dev.arachne.atak.StorageCrashActivity"
+            android:exported="true" android:theme="@android:style/Theme.Material.NoActionBar" />
+    </application>
+</manifest>
