@@ -71,6 +71,10 @@ fun main() {
     }
     val completion = controller.substringAfter("\"workspace_joined\" -> {").substringBefore("\"admission_waiting\"")
     check("preJoin = false" in completion) { "completed compact join must leave the pre-join catalog phase" }
+    val pushedCompletion = controller.substringAfter("\"awaiting_join_save\" -> {").substringBefore("\"workspace_joined\" -> {")
+    check("commitJoin" in pushedCompletion && "WORKSPACE_JOIN_SAVED_FROM_PUSH" in pushedCompletion) {
+        "a pushed admission result must be durably committed before the join is marked complete"
+    }
     val maintenance = controller.substringAfter("worker.scheduleWithFixedDelay({").substringBefore("}, 250, 250")
     check("pollPreJoin" !in maintenance && "pollPendingJoin" !in maintenance) {
         "workspace join progress must be driven by the native work signal, not the maintenance timer"

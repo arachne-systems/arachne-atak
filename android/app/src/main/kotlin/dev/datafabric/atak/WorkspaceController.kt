@@ -630,6 +630,16 @@ internal class WorkspaceController(
             val state = reply.getString("state")
             ArachneTrace.mark("join", state)
             val result = when (state) {
+                "awaiting_join_save" -> {
+                    val joined = store.commitJoin(reply, WorkspaceStore(context, pendingJoin = true)) { call(owner, it) }
+                    val complete = record.copy(joinPeer = null, joinAddress = null, joinRoutes = emptyList(), joinPeers = emptyList(), joinPinned = false, preJoin = false,
+                        memberName = joined.optJSONObject("member")?.getString("display_name") ?: record.memberName, sharedName = sharedName(joined))
+                    saveRecord(complete); records = readCatalog(); active = complete
+                    configureData(joined)
+                    controlDrain.signal()
+                    Log.i("Arachne", "WORKSPACE_JOIN_SAVED_FROM_PUSH")
+                    "Joined and saved. Workspace ready. Sharing waits for reachable subscribers."
+                }
                 "workspace_joined" -> {
                     val complete = record.copy(joinPeer = null, joinAddress = null, joinRoutes = emptyList(), joinPeers = emptyList(), joinPinned = false, preJoin = false,
                         memberName = reply.optJSONObject("member")?.getString("display_name") ?: record.memberName, sharedName = sharedName(reply))
