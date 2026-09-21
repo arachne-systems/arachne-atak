@@ -98,7 +98,9 @@ pub extern "system" fn Java_dev_arachne_atak_FabricNative_close(
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_arachne_atak_FabricNative_cancel(
-    mut env: JNIEnv, _: JObject, handle: jlong,
+    mut env: JNIEnv,
+    _: JObject,
+    handle: jlong,
 ) {
     boundary(&mut env, |_| cancel(handle));
 }
@@ -278,16 +280,24 @@ pub extern "system" fn Java_dev_arachne_atak_FabricNative_waitForWork(
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_datafabric_atak_FabricNative_create(
-    env: JNIEnv, object: JObject, secret: JByteArray, relay_only: jboolean,
-    lan_lookup: jboolean, local_only: jboolean,
+    env: JNIEnv,
+    object: JObject,
+    secret: JByteArray,
+    relay_only: jboolean,
+    lan_lookup: jboolean,
+    local_only: jboolean,
 ) -> jlong {
-    Java_dev_arachne_atak_FabricNative_create(env, object, secret, relay_only, lan_lookup, local_only)
+    Java_dev_arachne_atak_FabricNative_create(
+        env, object, secret, relay_only, lan_lookup, local_only,
+    )
 }
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_datafabric_atak_FabricNative_describe(
-    env: JNIEnv, object: JObject, handle: jlong,
+    env: JNIEnv,
+    object: JObject,
+    handle: jlong,
 ) -> jstring {
     Java_dev_arachne_atak_FabricNative_describe(env, object, handle)
 }
@@ -295,7 +305,9 @@ pub extern "system" fn Java_dev_datafabric_atak_FabricNative_describe(
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_datafabric_atak_FabricNative_close(
-    env: JNIEnv, object: JObject, handle: jlong,
+    env: JNIEnv,
+    object: JObject,
+    handle: jlong,
 ) {
     Java_dev_arachne_atak_FabricNative_close(env, object, handle)
 }
@@ -303,7 +315,9 @@ pub extern "system" fn Java_dev_datafabric_atak_FabricNative_close(
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_datafabric_atak_FabricNative_cancel(
-    env: JNIEnv, object: JObject, handle: jlong,
+    env: JNIEnv,
+    object: JObject,
+    handle: jlong,
 ) {
     Java_dev_arachne_atak_FabricNative_cancel(env, object, handle)
 }
@@ -311,7 +325,10 @@ pub extern "system" fn Java_dev_datafabric_atak_FabricNative_cancel(
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_datafabric_atak_FabricNative_execute(
-    env: JNIEnv, object: JObject, handle: jlong, request: JByteArray,
+    env: JNIEnv,
+    object: JObject,
+    handle: jlong,
+    request: JByteArray,
 ) -> jbyteArray {
     Java_dev_arachne_atak_FabricNative_execute(env, object, handle, request)
 }
@@ -319,7 +336,9 @@ pub extern "system" fn Java_dev_datafabric_atak_FabricNative_execute(
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_datafabric_atak_FabricNative_inspectInvitation(
-    env: JNIEnv, object: JObject, request: JByteArray,
+    env: JNIEnv,
+    object: JObject,
+    request: JByteArray,
 ) -> jbyteArray {
     Java_dev_arachne_atak_FabricNative_inspectInvitation(env, object, request)
 }
@@ -327,7 +346,11 @@ pub extern "system" fn Java_dev_datafabric_atak_FabricNative_inspectInvitation(
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_datafabric_atak_FabricNative_executeStored(
-    env: JNIEnv, object: JObject, handle: jlong, metadata: JByteArray, snapshot: JByteArray,
+    env: JNIEnv,
+    object: JObject,
+    handle: jlong,
+    metadata: JByteArray,
+    snapshot: JByteArray,
 ) -> jobjectArray {
     Java_dev_arachne_atak_FabricNative_executeStored(env, object, handle, metadata, snapshot)
 }
@@ -335,7 +358,11 @@ pub extern "system" fn Java_dev_datafabric_atak_FabricNative_executeStored(
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_datafabric_atak_FabricNative_enableRecords(
-    env: JNIEnv, object: JObject, handle: jlong, path: JString, root: JByteArray,
+    env: JNIEnv,
+    object: JObject,
+    handle: jlong,
+    path: JString,
+    root: JByteArray,
 ) {
     Java_dev_arachne_atak_FabricNative_enableRecords(env, object, handle, path, root)
 }
@@ -343,7 +370,11 @@ pub extern "system" fn Java_dev_datafabric_atak_FabricNative_enableRecords(
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_datafabric_atak_FabricNative_restoreRecords(
-    env: JNIEnv, object: JObject, handle: jlong, path: JString, root: JByteArray,
+    env: JNIEnv,
+    object: JObject,
+    handle: jlong,
+    path: JString,
+    root: JByteArray,
     workspace: JByteArray,
 ) -> jstring {
     Java_dev_arachne_atak_FabricNative_restoreRecords(env, object, handle, path, root, workspace)
@@ -352,7 +383,10 @@ pub extern "system" fn Java_dev_datafabric_atak_FabricNative_restoreRecords(
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_datafabric_atak_FabricNative_saveCandidate(
-    env: JNIEnv, object: JObject, handle: jlong, token: JByteArray,
+    env: JNIEnv,
+    object: JObject,
+    handle: jlong,
+    token: JByteArray,
 ) {
     Java_dev_arachne_atak_FabricNative_saveCandidate(env, object, handle, token)
 }
@@ -360,7 +394,9 @@ pub extern "system" fn Java_dev_datafabric_atak_FabricNative_saveCandidate(
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_datafabric_atak_FabricNative_waitForWork(
-    env: JNIEnv, object: JObject, handle: jlong,
+    env: JNIEnv,
+    object: JObject,
+    handle: jlong,
 ) -> jboolean {
     Java_dev_arachne_atak_FabricNative_waitForWork(env, object, handle)
 }
