@@ -1532,12 +1532,38 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
     internal fun debugWorkspaces(): WorkspaceConnections? { check(BuildConfig.DEBUG); return workspaces }
 
     private fun confirmResetArachne(button: Button) {
-        ArachneStyle.dialog(MapView.getMapView().context, pagePane)
+        val confirmation = EditText(context).apply {
+            hint = "Type RESET"
+            contentDescription = "Reset confirmation"
+            isSingleLine = true
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            ArachneStyle.text(this)
+            setHintTextColor(ArachneStyle.secondaryColor)
+        }
+        val dialog = ArachneStyle.dialog(MapView.getMapView().context, pagePane)
             .setTitle("Reset Arachne?")
-            .setMessage("This removes every Arachne workspace, identity, invitation, and setting from this device. ATAK data is not removed. You must restart ATAK afterward.")
+            .setMessage("This removes every Arachne workspace, identity, invitation, and setting from this device. ATAK data is not removed. Type RESET to continue. Restart ATAK afterward.")
+            .setView(labeledInput("Type RESET to confirm", confirmation))
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Reset Arachne") { _, _ -> navigate(Screen.DIAGNOSTICS); resetArachne(button) }
-            .show()
+            .setPositiveButton("Reset Arachne", null)
+            .create()
+        dialog.setOnShowListener {
+            val reset = dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE)
+            reset.isEnabled = false
+            confirmation.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) {
+                    reset.isEnabled = resetConfirmationAccepted(value)
+                }
+                override fun afterTextChanged(value: android.text.Editable?) = Unit
+            })
+            reset.setOnClickListener {
+                dialog.dismiss()
+                navigate(Screen.DIAGNOSTICS)
+                resetArachne(button)
+            }
+        }
+        dialog.show()
     }
 
     private fun resetArachne(button: Button) {
@@ -1573,7 +1599,8 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
                     "fabric-topic-choices", "fabric-feed-interests", "arachne-native-bindings-v1", "arachne-listener-ports-v1")
                 java.io.File(host.applicationInfo.dataDir, "shared_prefs").listFiles()?.forEach { file ->
                     val name = file.name.removeSuffix(".xml")
-                    if (name.startsWith("arachne-native-chat-") || name.startsWith("arachne-native-receipts-")) preferenceNames += name
+                    if (name.startsWith("arachne-native-chat-") || name.startsWith("arachne-native-receipts-") ||
+                        name.startsWith("arachne-native-identities-") || name.startsWith("arachne-resource-cache-")) preferenceNames += name
                 }
                 for (name in preferenceNames)
                     check(host.getSharedPreferences(name, android.content.Context.MODE_PRIVATE).edit().clear().commit()) { "Could not clear $name" }
