@@ -655,6 +655,10 @@ internal class WorkspaceController(
                 }
                 "admission_pending" -> "Joining… Waiting for the selected member."
                 "admission_queued" -> "Join request queued. Your saved join will finish automatically."
+                "admission_recovery_required" ->
+                    if (reply.optString("recovery") == "remove_and_reinvite")
+                        "This device is already listed in the workspace, but its local join state is missing. Ask an administrator to remove the old member entry and send a new invitation, then tap Retry now."
+                    else "This join needs administrator recovery. Keep this saved request and ask an administrator for the next step."
                 "admission_unavailable" -> when (reply.optString("reason")) {
                     "invitation_disabled" -> cancelJoinAttempt(record, "This invitation was declined or disabled. Contact an administrator for a new invitation.")
                     "invitation_expired" -> cancelJoinAttempt(record, "This invitation has expired. Contact an administrator for a new invitation.")
@@ -667,11 +671,11 @@ internal class WorkspaceController(
             // The native driver owns the in-flight exchange and raises the
             // work signal when it completes; only terminal/no-route outcomes
             // need the existing one-shot recovery fallback.
-            if (active?.joinPeer != null && state != "admission_pending") armPendingJoinDeadline()
+            if (active?.joinPeer != null && state != "admission_pending" && state != "admission_recovery_required") armPendingJoinDeadline()
             else {
                 joinRetryDeadline?.cancel(false)
                 joinRetryDeadline = null
-                joinRetry.reset()
+                if (state != "admission_recovery_required") joinRetry.reset()
             }
             return result
         } catch (error: Exception) {
@@ -933,6 +937,12 @@ internal class WorkspaceController(
                     "admission_replied", "invitation_checkpoint_replied")) {
                 if (staged.getString("state") == "membership_replied") {
                     if (refreshMembers()) message = "Workspace members updated."
+                }
+                if (staged.getString("state") == "admission_replied" &&
+                    staged.optString("recovery") == "remove_and_reinvite") {
+                    val name = staged.optString("display_name").takeIf { it.isNotBlank() && it != "null" } ?: "A joining device"
+                    membershipWarning = "$name is already a workspace member but is missing local join state. Use Remove member below, then have them join with a new invitation."
+                    message = "Recovery needed: remove and re-invite this device."
                 }
                 Log.i("Arachne", "WORKSPACE_RECOVERY_REPLIED")
                 return true

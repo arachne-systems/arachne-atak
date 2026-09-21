@@ -1942,6 +1942,9 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
             Ui.identity(context, "Member identity", member.id),
             Ui.note(context, "Names are self-chosen. Compare this identity when distinguishing people with the same name.")))
         memberActions.removeAllViews()
+        state.attentionReason?.takeIf { it.contains("missing local join state") }?.let {
+            memberActions.addView(Ui.notice(context, it, UiTone.WARNING))
+        }
         val actions = mutableListOf<Pair<String, String>>()
         if (admin && memberConnectionActive) {
             if (!member.administrator) actions.add("Make administrator" to "promote")
