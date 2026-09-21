@@ -2,7 +2,6 @@ package dev.arachne.atak
 
 import org.json.JSONArray
 import org.json.JSONObject
-import java.lang.management.ManagementFactory
 
 /** Roster refresh memory checks at 500 members. No Android or native
  * dependencies; needs a real org.json on the classpath. Run:
@@ -246,11 +245,30 @@ private fun chunkMatchesBefore() {
     check(WorkspaceRoster.chunk(big, 100).size == 1) { "an oversized single item still forms its own group" }
 }
 
-private val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
-private fun allocated(block: () -> Unit): Long {
-    val start = threads.getThreadAllocatedBytes(Thread.currentThread().id)
+// Android's unit-test boot classpath does not expose java.lang.management. Keep
+// the optional JVM allocation measurement reflective so the behavioral checks
+// still compile and run on Android; the standalone JVM check retains it.
+private val allocationBean: Any? by lazy {
+    runCatching {
+        Class.forName("java.lang.management.ManagementFactory")
+            .getMethod("getThreadMXBean")
+            .invoke(null)
+    }.getOrNull()
+}
+
+private fun allocated(block: () -> Unit): Long? {
+    val bean = allocationBean
+    val method = bean?.javaClass?.methods?.firstOrNull {
+        it.name == "getThreadAllocatedBytes" && it.parameterTypes.size == 1
+    }
+    if (bean == null || method == null) {
+        block()
+        return null
+    }
+    val threadId = Thread.currentThread().id
+    val start = (method.invoke(bean, threadId) as Number).toLong()
     block()
-    return threads.getThreadAllocatedBytes(Thread.currentThread().id) - start
+    return (method.invoke(bean, threadId) as Number).toLong() - start
 }
 
 private fun pollAllocatesLessThanBefore(workspace: ByteArray) {
@@ -260,8 +278,14 @@ private fun pollAllocatesLessThanBefore(workspace: ByteArray) {
     val current = Current(workspace)
     repeat(20) { legacy.refresh(texts[it % 2], 50_000); current.refresh(texts[it % 2], 50_000) }
     val polls = 20
-    val legacyBytes = allocated { repeat(polls) { legacy.refresh(texts[it % 2], 50_000) } } / polls
-    val currentBytes = allocated { repeat(polls) { current.refresh(texts[it % 2], 50_000) } } / polls
+    val legacyAllocated = allocated { repeat(polls) { legacy.refresh(texts[it % 2], 50_000) } }
+    val currentAllocated = allocated { repeat(polls) { current.refresh(texts[it % 2], 50_000) } }
+    if (legacyAllocated == null || currentAllocated == null) {
+        println("thread allocation measurement unavailable; behavioral checks passed")
+        return
+    }
+    val legacyBytes = legacyAllocated / polls
+    val currentBytes = currentAllocated / polls
     println("reply text: ${texts[0].length} chars; legacy retains saved profile text: ${legacy.saved!!.length} chars; current retains an 8-byte digest")
     println("allocated per 500-member poll: legacy=${legacyBytes / 1024} KiB, current=${currentBytes / 1024} KiB (${100 * currentBytes / legacyBytes}%)")
     check(currentBytes * 4 < legacyBytes) { "poll must allocate under a quarter of the replaced code: $currentBytes vs $legacyBytes" }
@@ -270,8 +294,14 @@ private fun pollAllocatesLessThanBefore(workspace: ByteArray) {
 private fun chunkAllocatesLessThanBefore() {
     val input = profiles(500, 390)
     repeat(2) { Legacy.chunk(input, 128 * 1024); WorkspaceRoster.chunk(input, 128 * 1024) }
-    val legacyBytes = allocated { Legacy.chunk(input, 128 * 1024) }
-    val currentBytes = allocated { WorkspaceRoster.chunk(input, 128 * 1024) }
+    val legacyAllocated = allocated { Legacy.chunk(input, 128 * 1024) }
+    val currentAllocated = allocated { WorkspaceRoster.chunk(input, 128 * 1024) }
+    if (legacyAllocated == null || currentAllocated == null) {
+        println("thread allocation measurement unavailable; behavioral checks passed")
+        return
+    }
+    val legacyBytes = legacyAllocated
+    val currentBytes = currentAllocated
     println("cache page split of 500 x 390-byte profiles: legacy=${legacyBytes / 1024 / 1024} MiB, current=${currentBytes / 1024} KiB")
     check(currentBytes * 10 < legacyBytes) { "page split must allocate under a tenth of the replaced code: $currentBytes vs $legacyBytes" }
 }
