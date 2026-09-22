@@ -20,6 +20,28 @@ import java.util.concurrent.atomic.AtomicReference
 
 /** Real Android resources, fonts, layouts, callbacks and preferences; no fabric state is touched. */
 internal object DesignSystemCheck {
+    fun checkToolbarIcon(context: Context): String {
+        val appIcon = context.packageManager.getApplicationInfo(context.packageName, 0).icon
+        check(context.resources.getResourceEntryName(appIcon) == "arachne_toolbar_icon") {
+            "ATAK's plugin entry must use the transparent toolbar icon"
+        }
+        val toolbarIcon = requireNotNull(context.getDrawable(R.drawable.arachne_toolbar_icon))
+        val bitmap = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+        try {
+            toolbarIcon.setBounds(0, 0, bitmap.width, bitmap.height)
+            toolbarIcon.draw(Canvas(bitmap))
+            check(listOf(0 to 0, 63 to 0, 0 to 63, 63 to 63).all { (x, y) ->
+                Color.alpha(bitmap.getPixel(x, y)) == 0
+            }) { "ATAK toolbar icons need transparent corners; opaque brand art is tinted into a white square" }
+            val pixels = IntArray(bitmap.width * bitmap.height)
+            bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+            check(pixels.any { Color.alpha(it) != 0 }) { "Toolbar icon artwork is empty" }
+        } finally {
+            bitmap.recycle()
+        }
+        return "PASS: ATAK plugin toolbar icon has visible artwork and transparent corners"
+    }
+
     fun run(context: Context, instrumentation: Instrumentation): JSONObject {
         val preferencesName = "design-system-test-${UUID.randomUUID()}"
         val isolated = object : ContextWrapper(context) {
@@ -32,13 +54,16 @@ internal object DesignSystemCheck {
             try {
                 ArachneStyle.initialize(context, isolated)
                 check(ArachneStyle.appearance == ArachneStyle.Appearance.DARK)
+                checkToolbarIcon(context)
                 check(ArachneComponents.elapsed(-1) == "0s")
                 check(ArachneComponents.elapsed(59_999) == "59s")
                 check(ArachneComponents.elapsed(60_000) == "1m 00s")
                 check(ArachneComponents.elapsed(3_661_000) == "1h 1m")
                 check(ArachneComponents.elapsed(86_400_000) == "1d 0h")
                 val counters = JSONObject().put("session", JSONArray(List(32) { 1 })).put("received_bytes", 1024L).put("sent_bytes", 512L)
-                    .put("receive_queue", 2).put("pending_objects", 3).put("repair_jobs", 1).put("paths_limited", false)
+                    .put("receive_queue", 2).put("admission_queue", 0).put("admission_queue_bytes", 0)
+                    .put("admission_in_flight", 0).put("approval_pending", 0).put("pending_objects", 3)
+                    .put("repair_jobs", 1).put("paths_limited", false)
                     .put("paths", JSONArray().put(JSONObject().put("member", JSONArray(List(32) { 2 })).put("route", "direct").put("rtt_ms", 12)))
                 val first = WorkspaceMetrics.read(counters, null, 1000, 4)
                 check(first.pending == 9 && first.paths.single().rttMs == 12L)

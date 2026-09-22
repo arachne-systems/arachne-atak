@@ -1,5 +1,5 @@
 //! Transport diagnostics in Android's log sink. The opt-in Iroh capture expires
-//! after five minutes and includes addresses/path probes, never application data.
+//! after five minutes and includes path/connect failures, never application data.
 use std::time::Duration;
 
 fn allowed(target: &str, name: &str, event: bool, instrumented: bool, age: Duration) -> bool {
@@ -11,8 +11,7 @@ fn allowed(target: &str, name: &str, event: bool, instrumented: bool, age: Durat
     }
     if !event {
         // Do not enable handle_message spans: their fields include datagrams.
-        return (target == "iroh::socket" && name == "endpoint")
-            || (target == "iroh::socket::remote_map::remote_state" && name == "RemoteStateActor");
+        return target == "iroh::socket" && name == "endpoint";
     }
     matches!(
         target,
@@ -21,9 +20,11 @@ fn allowed(target: &str, name: &str, event: bool, instrumented: bool, age: Durat
             | "iroh::_events::path::selected"
             | "iroh::_events::path::abandoned"
             | "iroh::_events::path::set_status"
-            | "iroh::socket::remote_map::remote_state"
-            | "noq_proto::n0_nat_traversal"
     )
+}
+
+fn gossip_warning_allowed(level: &tracing::Level, has_data_field: bool) -> bool {
+    (*level == tracing::Level::WARN || *level == tracing::Level::ERROR) && !has_data_field
 }
 
 fn capture_filter<S: tracing::Subscriber>(
@@ -32,6 +33,16 @@ fn capture_filter<S: tracing::Subscriber>(
 ) -> impl tracing_subscriber::Layer<S> {
     // A static metadata filter caches callsite interest and cannot enforce expiry.
     tracing_subscriber::filter::dynamic_filter_fn(move |metadata, _context| {
+        if instrumented
+            && age() < Duration::from_secs(300)
+            && metadata.target().starts_with("iroh_gossip::")
+        {
+            return metadata.is_event()
+                && gossip_warning_allowed(
+                    metadata.level(),
+                    metadata.fields().field("data").is_some(),
+                );
+        }
         allowed(
             metadata.target(),
             metadata.name(),
@@ -100,11 +111,10 @@ mod android {
                 targets = targets
                     .with_target("iroh::_events::qnt", LevelFilter::DEBUG)
                     .with_target("iroh::_events::path", LevelFilter::DEBUG)
-                    .with_target("iroh::socket::remote_map::remote_state", LevelFilter::TRACE)
-                    .with_target("noq_proto::n0_nat_traversal", LevelFilter::TRACE)
+                    .with_target("iroh_gossip", LevelFilter::WARN)
                     .with_target("iroh::socket", LevelFilter::INFO);
                 drop(AndroidLog(
-                    b"IROH_DIAGNOSTICS_ENABLED window_seconds=300 addresses=true payloads=false"
+                    b"IROH_DIAGNOSTICS_ENABLED window_seconds=300 paths=true failures=true payloads=false"
                         .to_vec(),
                 ));
             }
@@ -158,9 +168,11 @@ mod tests {
             for seconds in [0, 300, 299] {
                 age.store(seconds, Ordering::Relaxed);
                 tracing::info!(target: "iroh::_events::qnt::init", "bounded probe");
+                tracing::warn!(target: "iroh_gossip::net", peer = "peer", "dial failed: timeout");
+                tracing::warn!(target: "iroh_gossip::net", data = ?[1u8, 2, 3], "frame rejected");
             }
         });
-        assert_eq!(events.load(Ordering::Relaxed), 2);
+        assert_eq!(events.load(Ordering::Relaxed), 4);
     }
 
     #[test]
@@ -168,7 +180,7 @@ mod tests {
         let zero = Duration::ZERO;
         let target = "iroh::socket::remote_map::remote_state";
         assert!(!allowed(target, "event", true, false, zero));
-        assert!(allowed(target, "event", true, true, zero));
+        assert!(!allowed(target, "event", true, true, zero));
         assert!(allowed(
             "iroh::_events::qnt::init",
             "event",
@@ -176,14 +188,14 @@ mod tests {
             true,
             zero
         ));
-        assert!(allowed(
+        assert!(!allowed(
             "noq_proto::n0_nat_traversal",
             "event",
             true,
             true,
             zero
         ));
-        assert!(allowed(target, "RemoteStateActor", false, true, zero));
+        assert!(!allowed(target, "RemoteStateActor", false, true, zero));
         assert!(!allowed(target, "handle_message", false, true, zero));
         assert!(!allowed("iroh::socket", "event", true, true, zero));
         assert!(!allowed(
@@ -200,15 +212,16 @@ mod tests {
             true,
             zero
         ));
+        let path_event = "iroh::_events::path::open";
         assert!(allowed(
-            target,
+            path_event,
             "event",
             true,
             true,
             Duration::from_secs(299)
         ));
         assert!(!allowed(
-            target,
+            path_event,
             "event",
             true,
             true,
@@ -221,5 +234,13 @@ mod tests {
             false,
             Duration::from_secs(600)
         ));
+    }
+
+    #[test]
+    fn gossip_diagnostics_keep_failure_reasons_without_frame_bytes() {
+        assert!(gossip_warning_allowed(&tracing::Level::WARN, false));
+        assert!(gossip_warning_allowed(&tracing::Level::ERROR, false));
+        assert!(!gossip_warning_allowed(&tracing::Level::INFO, false));
+        assert!(!gossip_warning_allowed(&tracing::Level::WARN, true));
     }
 }

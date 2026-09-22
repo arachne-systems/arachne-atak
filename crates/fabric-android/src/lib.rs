@@ -1,12 +1,12 @@
 //! Android JNI adapter for the shared portable fabric runtime.
 use arachne_runtime::{
-    MAX_REQUEST, cancel, close, create_nearby, create_relay, create_tor, create_wan,
-    create_wan_only, describe, execute, execute_stored,
+    MAX_REQUEST, cancel, close, create, create_lan, create_nearby, create_relay, create_tor,
+    create_wan, create_wan_only, describe, execute, execute_stored,
 };
 use jni::{
     JNIEnv,
     objects::{JByteArray, JObject, JString},
-    sys::{jboolean, jbyteArray, jlong, jobjectArray, jstring},
+    sys::{jboolean, jbyteArray, jint, jlong, jobjectArray, jstring},
 };
 use std::panic::{AssertUnwindSafe, catch_unwind};
 #[cfg(any(
@@ -38,6 +38,14 @@ fn boundary<T: Default>(
     }
 }
 
+fn init_transport_diagnostics() {
+    #[cfg(all(
+        target_os = "android",
+        any(debug_assertions, feature = "iroh-diagnostics")
+    ))]
+    diagnostics::init();
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_arachne_atak_FabricNative_create(
     mut env: JNIEnv,
@@ -57,11 +65,7 @@ pub extern "system" fn Java_dev_arachne_atak_FabricNative_create(
             .as_slice()
             .try_into()
             .map_err(|_| "invalid endpoint credential")?;
-        #[cfg(all(
-            target_os = "android",
-            any(debug_assertions, feature = "iroh-diagnostics")
-        ))]
-        diagnostics::init();
+        init_transport_diagnostics();
         if local_only != 0 {
             create_nearby(seed)
         } else if relay_only != 0 {
@@ -90,7 +94,37 @@ pub extern "system" fn Java_dev_arachne_atak_FabricNative_createTor(
             .as_slice()
             .try_into()
             .map_err(|_| "invalid endpoint credential")?;
+        init_transport_diagnostics();
         create_tor(seed)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_arachne_atak_FabricNative_createProfile(
+    mut env: JNIEnv,
+    _: JObject,
+    secret: JByteArray,
+    profile: jint,
+) -> jlong {
+    boundary(&mut env, |env| {
+        if env.get_array_length(&secret).map_err(|e| e.to_string())? != 32 {
+            return Err("endpoint credential must be 32 bytes".into());
+        }
+        let bytes =
+            zeroize::Zeroizing::new(env.convert_byte_array(&secret).map_err(|e| e.to_string())?);
+        let seed = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| "invalid endpoint credential")?;
+        init_transport_diagnostics();
+        match profile {
+            0 => create_wan(seed),
+            1 => create(Some(seed)),
+            2 => create_lan(seed),
+            3 => create_wan_only(seed),
+            4 => create_relay(seed),
+            _ => Err("invalid Iroh transport profile".into()),
+        }
     })
 }
 

@@ -11,9 +11,12 @@ internal object WorkspaceDataRecoveryCheck {
     private const val NATIVE_CHAT = "atak/native/v1/chat"
     private const val PLI = "atak/native/v1/pli"
     private const val FEATURES = "atak/native/v1/features"
+    private const val DRAWINGS = "atak/native/v1/drawings"
+    private const val EVENTS = "atak/native/v1/events"
     private class Replies {
         val workspace = JSONArray(List(32) { 17 })
         var cutoffReady = false
+        var cutoffAlwaysReady = false
         var cutoffFails = false
         var rangeActive = false
         var rangeReady = false
@@ -29,12 +32,15 @@ internal object WorkspaceDataRecoveryCheck {
         var head = 1L
         var selectedTopics = listOf(CHAT)
         var fetchedTopics = emptyList<String>()
+        val cutoffPeers = mutableListOf<String>()
+        val cutoffTopics = mutableListOf<List<String>>()
         var currentActive = false
         var currentBlocked = false
         var currentSourceWaiting = false
         var currentReady = false
         var currentFetched = 0
         val currentTopics = mutableListOf<String>()
+        val currentRequests = mutableListOf<Pair<String, String>>()
         var currentStaged = 0
         var currentCancelled = 0
         var protectedPolls = 0
@@ -47,15 +53,18 @@ internal object WorkspaceDataRecoveryCheck {
             "set_interest" -> JSONObject().put("state", "interest_queued").put("queued", 0)
             "poll_interest" -> null
             "member_roster" -> JSONObject().put("members", JSONArray().put(
-                JSONObject().put("self", false).put("id", JSONArray(List(32) { 20 }))))
+                JSONObject().put("self", false).put("id", JSONArray(List(32) { 20 }))
+                    .put("endpoint", JSONArray(List(32) { 20 }))))
             "discover_recovery_cutoff" -> {
+                cutoffPeers.add(Hex.encode(request.getJSONArray("peer")))
                 selectedTopics = request.getJSONArray("topics").let { values ->
                     (0 until values.length()).map { values.getString(it) }
                 }
+                cutoffTopics.add(selectedTopics)
                 JSONObject().put("state", "recovery_cutoff_pending")
             }
-            "poll_recovery_cutoff" -> if (cutoffFails) error("publisher offline") else if (!cutoffReady) null else {
-                cutoffReady = false
+            "poll_recovery_cutoff" -> if (cutoffFails) error("publisher offline") else if (!cutoffReady && !cutoffAlwaysReady) null else {
+                if (!cutoffAlwaysReady) cutoffReady = false
                 JSONObject().put("state", "recovery_cutoff_observed").put("accepted_progress", false)
                     .put("workspace", workspace).put("revision", 1).put("head", head)
                     .put("topics", JSONArray(selectedTopics))
@@ -97,7 +106,8 @@ internal object WorkspaceDataRecoveryCheck {
             "fetch_current_view" -> {
                 check(!currentBlocked) { "continuity operation already pending" }
                 check(!request.has("peer"))
-                check((0 until 32).all { request.getJSONArray("authority").getInt(it) == 20 })
+                val authority = request.getJSONArray("authority")
+                currentRequests.add(request.getString("topic") to Hex.encode(authority))
                 currentTopics.add(request.getString("topic"))
                 check(request.getJSONArray("selector").length() == 32)
                 currentFetched++
@@ -137,9 +147,9 @@ internal object WorkspaceDataRecoveryCheck {
             else -> error("Unexpected runtime command: ${request.getString("op")}")
         }
 
-        fun data(context: Context, topics: Set<String> = setOf(CHAT), consumer: (JSONObject, (Boolean) -> Unit) -> Unit = { _, _ -> }, continuity: (String?) -> Unit = {}) =
+        fun data(context: Context, topics: Set<String> = setOf(CHAT), consumer: (JSONObject, (Boolean) -> Unit) -> Unit = { _, _ -> }, continuity: (String?) -> Unit = {}, reachablePeers: () -> List<ByteArray> = { emptyList() }) =
             WorkspaceData(WorkspaceStore(context), JSONObject().put("workspace", workspace).put("epoch", 0),
-                topics, ::call, consumer, deliveryClock = { now }, continuity = continuity)
+                topics, ::call, consumer, deliveryClock = { now }, reachablePeers = reachablePeers, continuity = continuity)
 
         fun publication(topic: String = CHAT, counter: Long = 7, member: Int = 20) =
             JSONObject().put("workspace", workspace).put("topic", topic).put("revision", 1)
@@ -232,6 +242,7 @@ internal object WorkspaceDataRecoveryCheck {
             val replies = Replies()
             replies.currentSourceWaiting = true
             val data = replies.data(context, setOf(PLI))
+            data.tick()
             check(!data.discoverCutoff(null, JSONArray(List(32) { 20 }), PLI))
             check(!data.discoverCutoff(null, JSONArray(List(32) { 20 }), PLI))
             check(replies.currentFetched == 1) { "Offline current source retried in the same interval" }
@@ -240,6 +251,40 @@ internal object WorkspaceDataRecoveryCheck {
             val replies = Replies()
             replies.data(context, setOf(PLI)).tick()
             check(replies.membershipPeerPolls == 0) { "Recovery rotated through membership peers" }
+        }
+        scenario("reachable_peers_auto_recover_history_and_every_native_current_topic") {
+            val replies = Replies()
+            val peers = listOf(ByteArray(32) { 20 }, ByteArray(32) { 21 })
+            var available = emptyList<ByteArray>()
+            val topics = setOf(CHAT, NATIVE_CHAT, PLI, FEATURES, DRAWINGS, EVENTS)
+            replies.currentReady = true
+            replies.cutoffAlwaysReady = true
+            replies.head = 0
+            replies.acceptedThrough = 0
+            val data = replies.data(context, topics, reachablePeers = { available })
+            repeat(topics.size) {
+                replies.now += 250
+                data.tick()
+                android.os.SystemClock.sleep(300)
+            }
+            available = peers
+            repeat(100) {
+                replies.now += 250
+                replies.currentReady = true
+                data.tick()
+            }
+            val expectedCurrent = peers.flatMap { peer ->
+                CotTopics.nativeCurrent.intersect(topics).map { it to Hex.encode(peer) }
+            }
+            check(expectedCurrent.all { it in replies.currentRequests }) {
+                "Reachable peers did not schedule every native current topic: expected=$expectedCurrent actual=${replies.currentRequests}"
+            }
+            check(replies.cutoffPeers.toSet() == peers.map(Hex::encode).toSet()) {
+                "Reachable peers did not schedule retained-history discovery: ${replies.cutoffPeers}"
+            }
+            check(replies.cutoffTopics.all { it.toSet() == setOf(CHAT, NATIVE_CHAT) }) {
+                "Retained-history discovery did not cover both message streams: ${replies.cutoffTopics}"
+            }
         }
         for (ready in listOf(false, true)) scenario(if (ready) "ready_range_cancelled" else "inflight_range_cancelled") {
             val replies = Replies()
@@ -361,7 +406,7 @@ internal object WorkspaceDataRecoveryCheck {
             val states = mutableListOf<String?>()
             val authority = "14".repeat(32)
             val feed = "feeds/$authority/${"34".repeat(16)}"
-            val data = replies.data(context, setOf(PLI, feed), continuity = { states.add(it) })
+            val data = replies.data(context, setOf(PLI, feed), continuity = { states.add(it) }, reachablePeers = { listOf(ByteArray(32) { 0x14 }) })
             data.tick()
             android.os.SystemClock.sleep(300)
             data.tick()
@@ -380,7 +425,7 @@ internal object WorkspaceDataRecoveryCheck {
         }
         scenario("catalog_discovery_retries_a_busy_runtime") {
             val replies = Replies()
-            val data = replies.data(context, setOf(WorkspaceResources.CATALOG))
+            val data = replies.data(context, setOf(WorkspaceResources.CATALOG), reachablePeers = { listOf(ByteArray(32) { 20 }) })
             data.tick()
             replies.currentBlocked = true
             data.tick()

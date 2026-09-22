@@ -7,8 +7,9 @@
     <permission android:name="dev.arachne.atak.permission.OPEN_INVITATION" android:protectionLevel="signature" />
     <uses-permission android:name="dev.arachne.atak.permission.OPEN_INVITATION" />
     <queries><package android:name="com.atakmap.app.civ" /></queries>
+    <!-- ATAK tints plugin icons; use transparent artwork so the opaque brand PNG cannot become a white square. -->
     <application android:allowBackup="false" android:label="Arachne"
-        android:icon="@drawable/fabric_icon" android:theme="@android:style/Theme.Material.NoActionBar">
+        android:icon="@drawable/arachne_toolbar_icon" android:theme="@android:style/Theme.Material.NoActionBar">
         <activity android:name=".InvitationActivity" android:exported="true" android:excludeFromRecents="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
