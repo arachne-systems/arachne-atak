@@ -53,6 +53,11 @@ internal fun parseCotFeedObservation(
 
 /** Maps selected CoT and legacy ADS-B feeds. */
 internal class FeedMapAdapter : AutoCloseable {
+    companion object {
+        fun supportsMapFormat(format: String): Boolean =
+            format == "adsb.lol.aircraft.v1" || format == "cot.event.v1"
+    }
+
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var workspace: ByteArray? = null
     @Volatile private var selected = emptySet<String>()
