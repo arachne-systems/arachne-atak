@@ -1,0 +1,3 @@
+<plugin>
+    <extension type="gov.tak.api.plugin.IPlugin" impl="dev.arachne.atak.FabricPlugin" singleton="true" />
+</plugin>

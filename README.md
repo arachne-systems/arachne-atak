@@ -67,6 +67,23 @@ for protocols, security, delivery and qualification details.
 
 </details>
 
+## Build from source
+
+Use JDK 17, Android SDK with NDK `27.1.12297006`, Rust `1.98.0` with the
+`aarch64-linux-android` and `x86_64-linux-android` targets, and an authorized
+ATAK-CIV `5.8.0.4` SDK obtained separately. The TAK SDK is not included.
+
+```sh
+git submodule update --init --recursive
+rustup toolchain install 1.98.0
+rustup target add --toolchain 1.98.0 aarch64-linux-android x86_64-linux-android
+FABRIC_TAK_SDK=/path/to/ATAK-CIV-5.8.0.4-SDK \
+ANDROID_HOME=/path/to/android-sdk scripts/build-plugin.sh
+```
+
+Set `FABRIC_NDK_VERSION` or `FABRIC_NDK_BIN` if the NDK is installed outside
+`$ANDROID_HOME/ndk/27.1.12297006`.
+
 ## Feedback
 
 Report bugs and product feedback in

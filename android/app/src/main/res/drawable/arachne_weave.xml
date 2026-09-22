@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The reviewed HTML weave, engraved at low opacity by ArachneStyle. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="320dp" android:height="180dp"
+    android:viewportWidth="320" android:viewportHeight="180">
+    <path android:fillColor="@android:color/transparent" android:strokeWidth="0.8"
+        android:pathData="M30,180L134,0M42,180L146,0M54,180L158,0M150,180L254,0M162,180L266,0M174,180L278,0M0,24L74,66M116,90L272,180M0,38L68,77M110,102L246,180M0,52L62,88M104,113L222,180M36,0L152,67M194,91L320,164M60,0L158,56M200,80L320,150M84,0L164,45M206,69L320,136">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:startX="0" android:startY="0" android:endX="320" android:endY="0">
+                <item android:offset="0.2" android:color="#00FFFFFF" />
+                <item android:offset="0.85" android:color="#FFFFFFFF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

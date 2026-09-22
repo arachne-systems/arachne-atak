@@ -1,0 +1,5 @@
+*.pdf binary
+*.bat text eol=crlf
+
+# Preserve upstream license bytes and their recorded checksums.
+docs/release/*-notices/texts/** -text -whitespace

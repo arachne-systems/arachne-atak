@@ -1,0 +1,29 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <permission android:name="dev.arachne.atak.permission.OPEN_INVITATION" android:protectionLevel="signature" />
+    <uses-permission android:name="dev.arachne.atak.permission.OPEN_INVITATION" />
+    <queries><package android:name="com.atakmap.app.civ" /></queries>
+    <application android:allowBackup="false" android:label="Arachne"
+        android:icon="@drawable/fabric_icon" android:theme="@android:style/Theme.Material.NoActionBar">
+        <activity android:name=".InvitationActivity" android:exported="true" android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="arachne" android:host="join" />
+                <data android:scheme="datafabric" android:host="join" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".InvitationScannerActivity" android:exported="true"
+            android:excludeFromRecents="true" />
+        <meta-data android:name="plugin-api" android:value="${atakApiVersion}" />
+        <meta-data android:name="app_desc" android:value="Decentralized workspace fabric" />
+        <activity android:name="com.atakmap.app.component" android:exported="true" tools:ignore="MissingClass">
+            <intent-filter android:label="Arachne"><action android:name="com.atakmap.app.component" /></intent-filter>
+        </activity>
+    </application>
+</manifest>
