@@ -8,9 +8,11 @@ The source tree is being rebuilt and separated from the portable core, SDK,
 relay, and feed projects. Future source files will identify their applicable
 license and copyright scope when they are published.
 
-The Mozilla Public License 2.0 in [LICENSE](LICENSE) is retained for the
-planned source boundary. It does not relicense material that is not identified
-as Arachne Covered Software in a source release.
+The Mozilla Public License 2.0 in [LICENSE](LICENSE) is intended for
+Arachne-owned ATAK plugin source when published. The standard MPL-2.0 form is
+selected; the optional Exhibit B notice excluding secondary-license
+compatibility is not selected. It does not relicense material that is not
+identified as Arachne Covered Software in a source release.
 
 This repository does not include, and this license does not relicense:
 
