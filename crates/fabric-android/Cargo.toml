@@ -2,6 +2,7 @@
 name = "fabric-android"
 version = "0.1.0"
 edition = "2024"
+license = "MPL-2.0"
 publish = false
 
 [lib]
