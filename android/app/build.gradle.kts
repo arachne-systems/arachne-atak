@@ -26,7 +26,7 @@ plugins {
 }
 val takSdk = providers.environmentVariable("FABRIC_TAK_SDK").orNull
 val atakVersion = providers.gradleProperty("atakVersion").getOrElse("5.8.0")
-require(atakVersion == "5.8.0") { "Supported build target: ATAK-CIV 5.8.0" }
+require(atakVersion in setOf("5.6.0", "5.7.0", "5.8.0")) { "Unsupported build target: $atakVersion" }
 extra["ATAK_VERSION"] = atakVersion
 extra["takrepoUrl"] = providers.gradleProperty("takrepo.url").getOrElse("https://localhost/")
 extra["takrepoUser"] = providers.gradleProperty("takrepo.user").getOrElse("invalid")
@@ -65,6 +65,7 @@ android {
             isMinifyEnabled = true
             matchingFallbacks += "odk"
             proguardFiles("proguard-gradle.txt", "proguard-repackage.txt")
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileSdk = 36
@@ -80,6 +81,14 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+    signingConfigs {
+        getByName("debug") {
+            storeFile = layout.buildDirectory.file("android_keystore").get().asFile
+            storePassword = "tnttnt"
+            keyAlias = "wintec_mapping"
+            keyPassword = "tnttnt"
+        }
     }
 }
 kotlin { jvmToolchain(17) }

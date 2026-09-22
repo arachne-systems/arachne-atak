@@ -68,13 +68,15 @@ private class Legacy(private val workspace: ByteArray) {
             val m = members.getJSONObject(it)
             val id = m.getJSONArray("id")
             check(id.length() == 32)
+            val endpoint = m.getJSONArray("endpoint")
+            check(endpoint.length() == 32)
             val kind = m.getString("kind").also { value -> check(value in setOf("person", "service")) }
             val age = m.optLong("last_contact_age_ms", -1).takeIf { it >= 0 }
             val freshFor = m.optLong("presence_fresh_for_ms", -1).takeIf { it >= 0 }
             WorkspaceMember((0 until 32).joinToString("") { i -> "%02x".format(id.getInt(i)) },
                 if (m.isNull("display_name")) null else m.getString("display_name"), m.getBoolean("administrator"), m.getBoolean("self"),
                 m.getString("presence").also { check(it in setOf("self", "reachable", "stale", "unknown")) }, kind == "service",
-                age?.let { observedAt - it }, freshFor?.let { observedAt + it })
+                age?.let { observedAt - it }, freshFor?.let { observedAt + it }, Hex.encode(endpoint, 32))
         }.sortedWith(compareBy({ it.name ?: "" }, { it.id }))
         val profiles = value.getJSONArray("profiles").toString()
         if (profiles != saved) {
@@ -132,6 +134,10 @@ private fun parsesTheSameMembersAsBefore(workspace: ByteArray) {
     val legacy = Legacy(workspace).apply { refresh(text, 50_000) }
     val current = Current(workspace).apply { refresh(text, 50_000) }
     check(legacy.views.size == MEMBERS && legacy.views == current.views) { "parsed members differ from the replaced parser" }
+    check(current.views.any { it.endpoint != it.id && it.identity().contentEquals(Hex.decode(it.id)) &&
+        it.endpointId().contentEquals(Hex.decode(it.endpoint)) }) {
+        "membership and transport identities must remain separate"
+    }
     check(current.views.all { WorkspaceRoster.parse(text, workspace, 50_000).members.contains(it) })
     check(runCatching { WorkspaceRoster.parse(text, ByteArray(32), 0) }.isFailure) { "workspace mismatch must be rejected" }
 }

@@ -4,8 +4,14 @@ import org.json.JSONArray
 
 internal data class WorkspaceMember(val id: String, val name: String?, val administrator: Boolean, val self: Boolean,
     val presence: String = "unknown", val service: Boolean = false,
-    val lastContactElapsedMs: Long? = null, val reachableUntilElapsedMs: Long? = null) {
+    val lastContactElapsedMs: Long? = null, val reachableUntilElapsedMs: Long? = null,
+    // Membership IDs identify signed workspace records; endpoint IDs identify
+    // the Iroh peer used for transport and recovery. Older local fixtures that
+    // omit endpoint keep the constructor's id fallback, but runtime rosters
+    // always provide the explicit endpoint field.
+    val endpoint: String = id) {
     fun identity() = Hex.decode(id)
+    fun endpointId() = Hex.decode(endpoint)
 }
 
 /** Lowercase hex without String.format. `"%02x".format` builds a Formatter per
@@ -81,6 +87,8 @@ internal object WorkspaceRoster {
         val m = members.getJSONObject(it)
         val id = m.getJSONArray("id")
         check(id.length() == 32)
+        val endpoint = m.getJSONArray("endpoint")
+        check(endpoint.length() == 32)
         val kind = m.getString("kind").also { value -> check(value == "person" || value == "service") }
         val age = m.optLong("last_contact_age_ms", -1).takeIf { it >= 0 }
         val freshFor = m.optLong("presence_fresh_for_ms", -1).takeIf { it >= 0 }
@@ -89,7 +97,7 @@ internal object WorkspaceRoster {
         }
         WorkspaceMember(Hex.encode(id, 32),
             if (m.isNull("display_name")) null else m.getString("display_name"), m.getBoolean("administrator"), m.getBoolean("self"),
-            presence, kind == "service", age?.let { observedAt - it }, freshFor?.let { observedAt + it })
+            presence, kind == "service", age?.let { observedAt - it }, freshFor?.let { observedAt + it }, Hex.encode(endpoint, 32))
     }.sortedWith(compareBy({ it.name ?: "" }, { it.id }))
 
     /** Keeps each previous member object whose only difference from the new

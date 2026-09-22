@@ -846,7 +846,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
     }
     private val help by lazy { PluginHelp(context, MapView.getMapView().context, pagePane) }
     private enum class Screen { WORKSPACES, CREATE, JOIN, JOIN_REVIEW, NEARBY, WAITING, RECONNECT, WORKSPACE, RENAME, MEMBERS, MEMBER, APPROVALS,
-        INVITATIONS, INVITE, INVITATION, NEARBY_DEVICES, FEEDS, FEED, DATA, CONNECTION, SETTINGS, APPEARANCE, NOTIFICATIONS, HELP, MANUAL, DIAGNOSTICS, PEERS, PEER, EVENTS, METRICS, SUPPORT, REPORT, ABOUT }
+        INVITATIONS, INVITE, INVITATION, NEARBY_DEVICES, FEEDS, FEED, DATA, CONNECTION, SETTINGS, TRANSPORT, APPEARANCE, NOTIFICATIONS, HELP, MANUAL, DIAGNOSTICS, PEERS, PEER, EVENTS, METRICS, SUPPORT, REPORT, ABOUT }
     private val formScreens = setOf(Screen.CREATE, Screen.JOIN, Screen.JOIN_REVIEW, Screen.INVITE, Screen.RENAME, Screen.RECONNECT, Screen.SUPPORT)
     private var screen = Screen.WORKSPACES
     private var formDialog: android.app.Dialog? = null
@@ -980,6 +980,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
             Screen.NEARBY_DEVICES -> "Nearby devices"
             Screen.FEED -> "Feed details"
             Screen.SETTINGS -> "Settings"
+            Screen.TRANSPORT -> "Iroh transport"
             Screen.APPEARANCE -> "Appearance"
             Screen.NOTIFICATIONS -> "Notifications"
             Screen.HELP -> "Help"
@@ -1055,6 +1056,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
             Screen.CONNECTION -> "Connection"
             Screen.HELP -> "Help"
             Screen.SETTINGS -> "Settings"
+            Screen.TRANSPORT -> "Iroh transport"
             Screen.WORKSPACE -> "Workspace settings"
             Screen.RENAME -> "Rename workspace"
             Screen.APPEARANCE -> "Appearance"
@@ -1188,6 +1190,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
 
     private fun settingsPage() = Ui.stack(context, ArachneStyle.SECTION_GAP,
         Ui.section(context, "Connections & data", Ui.stack(context, 0,
+            pageLink("Iroh transport", "Choose the workspace network profile, including Tor", Screen.TRANSPORT),
             Ui.link(context, "Packages & storage", "TAK Server, caching and quota · choose a workspace", Ui.Icon.DOWNLOAD) {
                 val records = memberState?.saved.orEmpty().filter { it.memberId != null && !it.ended }
                 if (records.isEmpty()) toast("Join or create a workspace to configure packages and storage.")
@@ -1212,6 +1215,37 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
                 if (android.os.Build.VERSION.SDK_INT >= 28) for (index in 0 until childCount)
                     ((getChildAt(index) as android.view.ViewGroup).getChildAt(0)).isAccessibilityHeading = true
             }
+
+    private fun transportSettings(): View {
+        val preferencesContext = MapView.getMapView().context
+        return Ui.stack(context, ArachneStyle.SECTION_GAP,
+        Ui.intro(context, "Choose how workspace sessions find and reach other members."),
+        Ui.section(context, "Iroh network profile", Ui.stack(context, 8).apply {
+            val profiles = IrohTransportProfile.values()
+            val selected = IrohTransportSetting.profile(preferencesContext)
+            val details = Ui.note(context, selected.description)
+            val choice = singleChoice(context, "Iroh network profile", profiles.map { it.label }.toTypedArray(), profiles.indexOf(selected)) {
+                IrohTransportSetting.setProfile(preferencesContext, profiles[it])
+                details.text = profiles[it].description
+            }
+            addView(choice)
+            addView(details)
+            addView(Ui.note(context, "Direct needs peer address hints. LAN-only needs members on the same local network."))
+            val tor = android.widget.Switch(context).apply {
+                isChecked = IrohTransportSetting.torOnly(preferencesContext)
+                setOnCheckedChangeListener { _, enabled ->
+                    IrohTransportSetting.setTorOnly(preferencesContext, enabled)
+                    choice.isEnabled = !enabled
+                    toast(if (enabled) "Tor-only transport applies to new or reopened workspace sessions."
+                        else "The selected Iroh profile applies to new or reopened workspace sessions.")
+                }
+            }
+            choice.isEnabled = !tor.isChecked
+            addView(Ui.toggle(context, "Use Tor only",
+                "Overrides the selected profile. Requires a local Tor daemon at 127.0.0.1:9050 (SOCKS) and 127.0.0.1:9051 (Control); every workspace member must use Tor.", tor))
+        }),
+        Ui.note(context, "Changes apply when a workspace session starts or reopens. Nearby invitation discovery continues to use the local network."))
+    }
 
     private fun appearanceSettings() = Ui.stack(context, ArachneStyle.SECTION_GAP,
         Ui.note(context, "Arachne on this device. ATAK's appearance is unchanged."),
@@ -1408,7 +1442,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
     }
 
     private fun pageLink(title: String, description: String, destination: Screen) = Ui.link(context, title, description, when (destination) {
-        Screen.SETTINGS, Screen.WORKSPACE, Screen.APPEARANCE -> Ui.Icon.SETTINGS
+        Screen.SETTINGS, Screen.TRANSPORT, Screen.WORKSPACE, Screen.APPEARANCE -> Ui.Icon.SETTINGS
         Screen.NOTIFICATIONS -> Ui.Icon.MAIL
         Screen.ABOUT -> Ui.Icon.HELP
         Screen.DIAGNOSTICS, Screen.EVENTS, Screen.CONNECTION -> Ui.Icon.ACTIVITY
@@ -2216,7 +2250,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
     private fun pathLabel(paths: List<PeerPath>, metrics: WorkspaceMetrics?): String = when {
         metrics == null -> "Awaiting measurements"
         paths.isEmpty() -> if (metrics.pathsLimited) "Observation limit reached" else "No active path"
-        else -> paths.map { when (it.route) { "direct" -> "Direct"; "relay" -> "Relay"; else -> "Custom" } }.distinct().sorted().joinToString(" + ")
+        else -> paths.map { when (it.route) { "direct" -> "Direct"; "relay" -> "Relay"; "tor" -> "Tor"; else -> "Custom" } }.distinct().sorted().joinToString(" + ")
     }
     private fun showMetrics() {
         val connections = connectionState ?: return replacePage(Screen.METRICS, listOf("loading")) {
@@ -2428,6 +2462,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
                 navigation("Join", Screen.JOIN), navigation("Create", Screen.CREATE).apply { ArachneStyle.button(this, UiAction.PRIMARY) }),
             workspaceList, Ui.note(context, "Opening a workspace keeps its sharing choices. Use Connection to pause or resume."))
         section(Screen.SETTINGS, settingsPage())
+        section(Screen.TRANSPORT, transportSettings())
         section(Screen.APPEARANCE, appearanceSettings())
         section(Screen.NOTIFICATIONS, notificationSettings())
         section(Screen.HELP, Ui.note(context, "Guidance is available offline. Project support opens your browser."),
@@ -2599,9 +2634,10 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
         }
         return accepted
     }
+    // ATAK tints toolbar icons; keep this transparent mark separate from the opaque brand PNG.
     private val button = ToolbarItem.Builder(
         "Arachne",
-        MarshalManager.marshal(context.getDrawable(R.drawable.fabric_icon), Drawable::class.java, Bitmap::class.java)
+        MarshalManager.marshal(ArachneStyle.drawable(R.drawable.arachne_toolbar_icon), Drawable::class.java, Bitmap::class.java)
     ).setIdentifier("dev.arachne.atak").setListener(object : ToolbarItemAdapter() {
         override fun onClick(item: ToolbarItem) { showPane() }
     }).build()

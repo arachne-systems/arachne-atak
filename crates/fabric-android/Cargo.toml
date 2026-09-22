@@ -13,7 +13,7 @@ crate-type = ["cdylib", "rlib"]
 iroh-diagnostics = []
 
 [dependencies]
-arachne-runtime = { path = "../../core/crates/arachne-runtime" }
+arachne-runtime = { path = "../../core/crates/arachne-runtime", features = ["tor"] }
 arachne-security = { path = "../../core/crates/arachne-security" }
 jni = "=0.21.1"
 zeroize = "1"

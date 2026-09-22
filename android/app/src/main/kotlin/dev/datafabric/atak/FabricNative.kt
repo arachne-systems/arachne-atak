@@ -14,6 +14,8 @@ internal object FabricNative {
     fun load(path: String) { System.load(path) }
     external fun inspectInvitation(request: ByteArray): ByteArray
     external fun create(secret: ByteArray, relayOnly: Boolean, lanLookup: Boolean, localOnly: Boolean): Long
+    external fun createProfile(secret: ByteArray, profile: Int): Long
+    external fun createTor(secret: ByteArray): Long
     external fun describe(handle: Long): String
     external fun execute(handle: Long, request: ByteArray): ByteArray
     external fun executeStored(handle: Long, metadata: ByteArray, snapshot: ByteArray): Array<ByteArray>
@@ -57,6 +59,12 @@ internal class NativeAccess(context: Context) {
         lanLookup,
         localOnly,
     ) as Long
+    fun createProfile(secret: ByteArray, profile: Int): Long = call(
+        "createProfile", arrayOf(ByteArray::class.java, Int::class.javaPrimitiveType!!), secret, profile,
+    ) as Long
+    fun createTor(secret: ByteArray): Long = call(
+        "createTor", arrayOf(ByteArray::class.java), secret,
+    ) as Long
     fun describe(handle: Long): String = call("describe", arrayOf(Long::class.javaPrimitiveType!!), handle) as String
     fun execute(handle: Long, request: ByteArray): ByteArray =
         call("execute", arrayOf(Long::class.javaPrimitiveType!!, ByteArray::class.java), handle, request) as ByteArray
@@ -78,6 +86,56 @@ internal class NativeAccess(context: Context) {
     fun close(handle: Long) { call("close", arrayOf(Long::class.javaPrimitiveType!!), handle) }
 }
 
+internal enum class IrohTransportProfile(
+    val nativeId: Int,
+    val label: String,
+    val description: String,
+    val preferenceValue: String,
+) {
+    AUTOMATIC(0, "Automatic (recommended)", "LAN discovery, public lookup, direct paths and Iroh relays.", "automatic"),
+    DIRECT(1, "Direct only", "Direct connections only. Peers need usable address hints; there is no discovery or relay fallback.", "direct"),
+    LAN(2, "LAN only", "Local discovery and direct paths. No public lookup or Iroh relays.", "lan"),
+    WAN_ONLY(3, "WAN only", "Public lookup without LAN discovery or saved address hints. Direct paths remain enabled.", "wan-only"),
+    RELAY_ONLY(4, "Relay only", "Route workspace traffic through Iroh relays; direct IP paths are disabled.", "relay-only"),
+}
+
+internal data class IrohTransportSettings(
+    val torOnly: Boolean,
+    val profile: IrohTransportProfile,
+)
+
+internal object IrohTransportSetting {
+    private const val PREFERENCES = "arachne-network"
+    private const val TOR_ONLY = "tor-only"
+    private const val PROFILE = "profile"
+
+    private fun preferences(context: Context) = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+
+    fun profile(context: Context): IrohTransportProfile = IrohTransportProfile.values().firstOrNull {
+        it.preferenceValue == preferences(context).getString(PROFILE, null)
+    } ?: IrohTransportProfile.AUTOMATIC
+
+    fun torOnly(context: Context): Boolean = preferences(context).getBoolean(TOR_ONLY, false)
+
+    fun read(context: Context) = IrohTransportSettings(torOnly(context), profile(context))
+
+    fun setProfile(context: Context, profile: IrohTransportProfile) {
+        preferences(context).edit().putString(PROFILE, profile.preferenceValue).apply()
+    }
+
+    fun setTorOnly(context: Context, enabled: Boolean) {
+        preferences(context).edit().putBoolean(TOR_ONLY, enabled).apply()
+    }
+
+}
+
+internal fun createWorkspaceTransport(
+    bridge: NativeAccess,
+    secret: ByteArray,
+    settings: IrohTransportSettings,
+): Long = if (settings.torOnly) bridge.createTor(secret)
+else bridge.createProfile(secret, settings.profile.nativeId)
+
 /** Verify a link without allocating an endpoint, membership or saved join. Call off the UI thread. */
 internal fun inspectWorkspaceInvitation(context: Context, request: ByteArray): org.json.JSONObject =
     org.json.JSONObject(String(NativeAccess(context).inspectInvitation(request), Charsets.UTF_8))
@@ -91,7 +149,7 @@ internal fun hydrateWorkspaceInvitation(context: Context, invitation: org.json.J
     val secret = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
     var handle = 0L
     try {
-        handle = bridge.create(secret, false, true)
+        handle = createWorkspaceTransport(bridge, secret, IrohTransportSetting.read(context))
         val request = org.json.JSONObject().put("op", "fetch_invitation_checkpoint")
             .put("peers", org.json.JSONArray(WorkspaceInvitation.bootstrapPeers(owned).map {
                 org.json.JSONArray(it.map { byte -> byte.toInt() and 255 })
@@ -144,12 +202,26 @@ internal class FabricSession(
                 identity = credential
                 val relayOnly = BuildConfig.DEBUG && File(context.noBackupFilesDir, "arachne-relay-only").isFile
                 val wanOnly = BuildConfig.DEBUG && File(context.noBackupFilesDir, "arachne-wan-only").isFile
+                val transport = IrohTransportSetting.read(context)
+                check(lanOnly || !transport.torOnly || (!relayOnly && !wanOnly)) {
+                    "Conflicting Tor and diagnostic network profiles"
+                }
                 check(!relayOnly || !wanOnly) { "Conflicting diagnostic network profiles" }
                 if (relayOnly) Log.w("Arachne", "NATIVE_RELAY_ONLY_PROFILE")
                 if (wanOnly) Log.w("Arachne", "NATIVE_WAN_ONLY_PROFILE")
+                val selected = when {
+                    lanOnly -> "nearby"
+                    relayOnly -> "relay-only"
+                    wanOnly -> "wan-only"
+                    transport.torOnly -> "tor-only"
+                    else -> transport.profile.preferenceValue
+                }
+                Log.i("Arachne", "NATIVE_IROH_PROFILE selected=$selected")
                 try {
                     handle = if (lanOnly) bridge.create(credential.secret, false, false, true)
-                    else bridge.create(credential.secret, relayOnly, !relayOnly && !wanOnly)
+                    else if (relayOnly) bridge.create(credential.secret, true, false)
+                    else if (wanOnly) bridge.create(credential.secret, false, false)
+                    else createWorkspaceTransport(bridge, credential.secret, transport)
                 }
                 finally { credential.secret.fill(0) }
                 val waited = handle

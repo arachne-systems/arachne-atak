@@ -1089,7 +1089,10 @@ internal class WorkspaceController(
             }
         }
         dataEpoch = metadata.getLong("epoch")
-        data = WorkspaceData(store, metadata, choices.interests() + WorkspaceFeeds.CATALOG + WorkspaceResources.CATALOG + WorkspaceResources.CLAIMS + catalog.interests(), { callOptional(owner, it) }, consumer) { status ->
+        // WorkspaceMember.id stays the signed membership identity for direct
+        // audience authorization; endpointId() is the Iroh transport key.
+        data = WorkspaceData(store, metadata, choices.interests() + WorkspaceFeeds.CATALOG + WorkspaceResources.CATALOG + WorkspaceResources.CLAIMS + catalog.interests(), { callOptional(owner, it) }, consumer,
+            reachablePeers = { members?.views.orEmpty().filter { !it.self && it.presence == "reachable" }.map { it.endpointId() } }) { status ->
             if (continuityStatus != status) {
                 continuityStatus = status
                 continuityChangedAt = System.currentTimeMillis()

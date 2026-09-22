@@ -38,6 +38,7 @@ internal object WorkspaceMembersCheck {
         val members = JSONArray()
         repeat(count) { i ->
             members.put(JSONObject().put("id", JSONArray((0 until 32).map { i }))
+                .put("endpoint", JSONArray((0 until 32).map { i }))
                 .put("kind", "person").put("administrator", false).put("self", i == 0)
                 .put("display_name", "Member $i").put("presence", "unknown"))
         }

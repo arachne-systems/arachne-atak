@@ -17,6 +17,7 @@ internal class WorkspaceData(
     private val call: (JSONObject) -> JSONObject?,
     private val received: ((JSONObject, (Boolean) -> Unit) -> Unit)?,
     private val deliveryClock: () -> Long = { android.os.SystemClock.elapsedRealtime() },
+    private val reachablePeers: () -> List<ByteArray> = { emptyList() },
     private val continuity: (String?) -> Unit = {}
 ) {
     companion object {
@@ -56,6 +57,9 @@ internal class WorkspaceData(
     private val delivering = linkedMapOf<String, Delivery>()
     private val deferred = linkedMapOf<String, Pair<JSONObject, Long>>()
     private var nextContinuityAttempt = 0L
+    private var rangeRecoveryPending = false
+    private var nextReachableSweep = 0L
+    private var reachableSweepCursor = 0
     // Only the explicitly supplied publisher route may seed holder recovery.
     // There is no roster walk for an arbitrary offline member.
     private var lastRecoveryPeer: JSONArray? = null
@@ -65,6 +69,8 @@ internal class WorkspaceData(
     private var directRecoveryTopic: String? = null
     private val installedInterests = mutableSetOf<String>()
     private val pendingCurrentTopics = ArrayDeque<Pair<String, ByteArray>>()
+    private val pendingReachableHistory = ArrayDeque<ByteArray>()
+    private val pendingReachableCurrent = ArrayDeque<Pair<String, ByteArray>>()
     private fun retainedInterests() = topics.filter { it in retainedEventTopics }
     private fun currentSelection(authority: ByteArray?, preferredTopic: String? = null): Pair<String, ByteArray>? {
         authority ?: return null
@@ -96,6 +102,7 @@ internal class WorkspaceData(
         // accepted inbox work when one of its selected topics is disabled.
         if (retainedInterests().any { it !in next }) {
             call(JSONObject().put("op", "cancel_recovery_range"))
+            rangeRecoveryPending = false
             continuity(null)
         }
         if (directRecoveryTopic?.let { it !in next } == true) {
@@ -108,6 +115,7 @@ internal class WorkspaceData(
                 .put("revision", revision).put("topic", topic).put("subscribed", false)))
             installedInterests.remove(topic)
             pendingCurrentTopics.removeAll { it.first == topic }
+            pendingReachableCurrent.removeAll { it.first == topic }
             if (topic == currentRecoveryTopic) {
                 call(JSONObject().put("op", "cancel_current_view"))
                 currentRecoveryTopic = null
@@ -115,6 +123,7 @@ internal class WorkspaceData(
             }
         }
         topics = next.sorted()
+        if (retainedInterests().isEmpty()) pendingReachableHistory.clear()
         reconnect()
     }
 
@@ -138,8 +147,7 @@ internal class WorkspaceData(
 
     fun discoverCutoff(peer: JSONArray?, authority: JSONArray? = null, preferredTopic: String? = null): Boolean {
         val now = deliveryClock()
-        if (now < nextContinuityAttempt) return false
-        if (currentRecoveryTopic != null) return false
+        if (now < nextContinuityAttempt || currentRecoveryTopic != null || rangeRecoveryPending || directRecoveryTopic != null) return false
         peer?.let { lastRecoveryPeer = JSONArray(it.toString()) }
         try {
             val retained = retainedInterests().isNotEmpty()
@@ -190,6 +198,7 @@ internal class WorkspaceData(
                     val pending = checkNotNull(call(JSONObject().put("op", "discover_recovery_cutoff")
                         .put("peer", peer).put("revision", revision).put("topics", JSONArray(selected))))
                     check(pending.getString("state") == "recovery_cutoff_pending")
+                    rangeRecoveryPending = true
                     Log.i("Arachne", "WORKSPACE_CUTOFF_STARTED")
                 }
             }
@@ -207,6 +216,7 @@ internal class WorkspaceData(
     private fun pollCutoff() {
         try {
             val result = call(JSONObject().put("op", "poll_recovery_cutoff")) ?: return
+            rangeRecoveryPending = false
             check(!result.getBoolean("accepted_progress"))
             when (result.getString("state")) {
                 "recovery_cutoff_observed" -> {
@@ -234,10 +244,15 @@ internal class WorkspaceData(
                         }
                         head > acceptedThrough -> {
                             continuity("Missed Chat updates found. Recovering now…")
-                            val started = call(JSONObject().put("op", "fetch_recovery_range")
+                            val request = JSONObject().put("op", "fetch_recovery_range")
                                 .put("author", result.getJSONArray("author")).put("revision", revision)
                                 .put("topics", JSONArray(selected))
-                                .put("after", acceptedThrough).put("through", head))
+                                .put("after", acceptedThrough).put("through", head)
+                            // Keep the holder that supplied the cutoff. It may be
+                            // reachable by endpoint ID without being a gossip neighbor.
+                            lastRecoveryPeer?.let { request.put("peer", it) }
+                            val started = call(request)
+                            rangeRecoveryPending = started?.optString("state") in setOf("recovery_range_pending", "recovery_source_waiting")
                             if (started?.getString("state") == "recovery_source_waiting") {
                                 continuity("Waiting for a connected member with the missing Chat updates.")
                                 Log.i("Arachne", "WORKSPACE_RECOVERY_WAITING")
@@ -263,9 +278,11 @@ internal class WorkspaceData(
                     .put("revision", revision).put("topics", JSONArray(selected)))
             } catch (fallback: Exception) { null }
             if (pending?.getString("state") == "recovery_range_pending") {
+                rangeRecoveryPending = true
                 continuity("Checking connected members for missed Chat updates…")
                 Log.i("Arachne", "WORKSPACE_RECOVERY_HOLDER_STARTED")
             } else {
+                rangeRecoveryPending = false
                 continuity("Couldn’t confirm missed updates. Live sharing continues.")
                 Log.w("Arachne", "WORKSPACE_RECOVERY_HOLDER_WAITING")
             }
@@ -321,23 +338,28 @@ internal class WorkspaceData(
                     .put("retain_until", System.currentTimeMillis() / 1000 + 3600))) }
                 catch (error: Exception) {
                     call(JSONObject().put("op", "cancel_recovery_range"))
+                    rangeRecoveryPending = false
                     continuity("Missed Chat updates could not be verified. Keeping saved data.")
                     Log.w("Arachne", "WORKSPACE_RECOVERY_UNAVAILABLE reason=staging_rejected")
                     return
                 }
                 if (staged.getString("state") == "recovery_no_new_objects") {
+                    rangeRecoveryPending = false
                     continuity(null)
                     return
                 }
                 val saved = store.commitRecovery(staged) { checkNotNull(call(it)) }
+                rangeRecoveryPending = false
                 continuity(null)
                 Log.i("Arachne", "WORKSPACE_RECOVERY_SAVED count=${saved.getInt("publication_count")}")
             } else if (reply.optBoolean("automatic_source")) {
                 // A holder lookup without a publisher cutoff found no retained
                 // range; that does not prove this reader missed anything.
+                rangeRecoveryPending = false
                 continuity(null)
                 Log.i("Arachne", "WORKSPACE_RECOVERY_UNCONFIRMED")
             } else {
+                rangeRecoveryPending = false
                 continuity("Missed Chat updates are unavailable from connected members.")
                 Log.w("Arachne", "WORKSPACE_RECOVERY_UNAVAILABLE reason=${reply.optString("reason")}")
             }
@@ -471,15 +493,8 @@ internal class WorkspaceData(
         else if (interest?.optString("state") == "interest_failed") Log.w("Arachne", "WORKSPACE_SUBSCRIPTION_RETRY")
         recover()
         val now = android.os.SystemClock.elapsedRealtime()
-        while (currentRecoveryTopic == null && pendingCurrentTopics.isNotEmpty()) {
-            val pending = pendingCurrentTopics.removeFirst()
-            if (pending.first in installedInterests && !discoverCutoff(null, pending.second.json(), pending.first)) {
-                // Another recovery transaction may still own the runtime. Keep
-                // this discovery queued instead of losing it on a busy reply.
-                pendingCurrentTopics.addLast(pending)
-                break
-            }
-        }
+        startNextRecovery()
+        scheduleReachableRecovery(deliveryClock())
         if (topics.isEmpty() || now < nextAnnouncement) return
         val topic = topics[nextTopic]
         try {
@@ -487,15 +502,12 @@ internal class WorkspaceData(
                 .put("revision", revision).put("topic", topic).put("subscribed", true)))
             check(report.getString("state") == "interest_queued")
             if (installedInterests.add(topic)) {
-                WorkspaceFeeds.authority(topic)?.let { pendingCurrentTopics.addLast(topic to it) }
+                val reachable = reachablePeers()
+                WorkspaceFeeds.authority(topic)?.let { authority ->
+                    if (reachable.any { it.contentEquals(authority) }) pendingCurrentTopics.addLast(topic to authority)
+                }
                 if (topic in setOf(WorkspaceFeeds.CATALOG, WorkspaceResources.CATALOG, WorkspaceResources.CLAIMS)) {
-                    // Catalog discovery starts with the subscription, rather
-                    // than waiting behind every map category's repair timer.
-                    val roster = checkNotNull(call(JSONObject().put("op", "member_roster"))).getJSONArray("members")
-                    repeat(roster.length()) { index ->
-                        val member = roster.getJSONObject(index)
-                        if (!member.getBoolean("self")) pendingCurrentTopics.addLast(topic to member.getJSONArray("id").bytes())
-                    }
+                    reachable.forEach { pendingCurrentTopics.addLast(topic to it.copyOf()) }
                 }
             }
         } catch (error: Exception) {
@@ -508,6 +520,60 @@ internal class WorkspaceData(
             nextTopic = 0
             nextAnnouncement = Long.MAX_VALUE
         } else nextAnnouncement = now + 250
+    }
+
+    private fun startNextRecovery() {
+        if (deliveryClock() < nextContinuityAttempt || currentRecoveryTopic != null || rangeRecoveryPending || directRecoveryTopic != null) return
+        while (pendingCurrentTopics.isNotEmpty()) {
+            val pending = pendingCurrentTopics.removeFirst()
+            if (pending.first !in installedInterests) continue
+            if (!discoverCutoff(null, pending.second.json(), pending.first)) {
+                // Keep a busy or rate-limited request for its next bounded turn.
+                pendingCurrentTopics.addLast(pending)
+            }
+            return
+        }
+        while (pendingReachableHistory.isNotEmpty()) {
+            val peer = pendingReachableHistory.removeFirst()
+            if (!discoverCutoff(peer.json())) pendingReachableHistory.addLast(peer)
+            return
+        }
+        while (pendingReachableCurrent.isNotEmpty()) {
+            val pending = pendingReachableCurrent.removeFirst()
+            if (pending.first !in installedInterests) continue
+            if (!discoverCutoff(null, pending.second.json(), pending.first)) pendingReachableCurrent.addLast(pending)
+            return
+        }
+    }
+
+    private fun scheduleReachableRecovery(now: Long) {
+        if (now < nextReachableSweep || nextAnnouncement != Long.MAX_VALUE) return
+        if (pendingCurrentTopics.isNotEmpty() || pendingReachableHistory.isNotEmpty() || pendingReachableCurrent.isNotEmpty() ||
+            currentRecoveryTopic != null || rangeRecoveryPending || directRecoveryTopic != null) {
+            nextReachableSweep = now + CONTINUITY_INTERVAL_MS
+            return
+        }
+        val peers = reachablePeers().filter { it.size == 32 }
+            .distinctBy { Hex.encode(it) }.sortedBy { Hex.encode(it) }
+        if (peers.isEmpty()) {
+            nextReachableSweep = now + 5_000L
+            return
+        }
+        // ponytail: cap each sweep at 16 reachable members; tune from measured recovery latency at larger mesh sizes.
+        val count = minOf(16, peers.size)
+        val start = reachableSweepCursor % peers.size
+        val selected = List(count) { peers[(start + it) % peers.size] }
+        reachableSweepCursor = (start + count) % peers.size
+        nextReachableSweep = now + CONTINUITY_INTERVAL_MS
+        for (peer in selected) {
+            if (retainedInterests().isNotEmpty()) pendingReachableHistory.addLast(peer.copyOf())
+            for (topic in installedInterests) {
+                if (topic in CotTopics.nativeCurrent ||
+                    WorkspaceFeeds.authority(topic)?.contentEquals(peer) == true ||
+                    topic in setOf(WorkspaceFeeds.CATALOG, WorkspaceResources.CATALOG, WorkspaceResources.CLAIMS))
+                    pendingReachableCurrent.addLast(topic to peer.copyOf())
+            }
+        }
     }
 
     private fun JSONArray.bytes() = ByteArray(length()) { getInt(it).also { value -> require(value in 0..255) }.toByte() }

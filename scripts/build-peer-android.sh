@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-if [[ -n "${FABRIC_NDK_BIN:-}" ]]; then
-    fabric_ndk_bin=$FABRIC_NDK_BIN
-else
-    : "${ANDROID_HOME:?Set ANDROID_HOME or FABRIC_NDK_BIN to locate the Android NDK}"
-    fabric_ndk_bin="$ANDROID_HOME/ndk/${FABRIC_NDK_VERSION:-27.1.12297006}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-fi
+fabric_ndk_bin="${FABRIC_NDK_BIN:-/home/user/Android/Sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/linux-x86_64/bin}"
 fabric_android_target="${FABRIC_ANDROID_TARGET:-x86_64-linux-android}"
 case "$fabric_android_target" in
     x86_64-linux-android|aarch64-linux-android) ;;

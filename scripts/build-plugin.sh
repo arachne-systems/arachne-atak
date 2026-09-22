@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-: "${FABRIC_TAK_SDK:?Set FABRIC_TAK_SDK to the separately obtained ATAK-CIV 5.8.0.4 SDK}"
-export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-: "${ANDROID_HOME:?Set ANDROID_HOME to your Android SDK directory}"
+export FABRIC_TAK_SDK="${FABRIC_TAK_SDK:-$root/.cache/sdk/ATAK-CIV-5.8.0.4-SDK}"
+export ANDROID_HOME="${ANDROID_HOME:-/home/user/Android/Sdk}"
+export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}"
+: "${FABRIC_TAK_SDK:?Provide the extracted TAK SDK path}"
 test -f "$FABRIC_TAK_SDK/main.jar"
 for fabric_abi in x86_64 arm64-v8a; do
     case "$fabric_abi" in

@@ -43,7 +43,7 @@ internal data class WorkspaceMetrics(
                     val path = paths.getJSONObject(index)
                     val member = path.getJSONArray("member").also { require(it.length() == 32) }
                     PeerPath((0 until 32).joinToString("") { "%02x".format(member.getInt(it).also { n -> require(n in 0..255) }) },
-                        path.getString("route").also { require(it in setOf("direct", "relay", "custom")) },
+                        path.getString("route").also { require(it in setOf("direct", "relay", "tor", "custom")) },
                         path.getLong("rtt_ms").also { require(it >= 0) })
                 }, value.getBoolean("paths_limited"))
         }
