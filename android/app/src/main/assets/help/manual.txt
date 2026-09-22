@@ -1,0 +1,7 @@
+Reset Arachne
+
+Use this if you need to clear Arachne from this device and start again. This removes Arachne workspaces, invitations, cached messages and resources, relay settings, and endpoint identities. ATAK maps, contacts, preferences, and other ATAK data are kept.
+
+1. Open Arachne → Settings → Reset Arachne.
+2. Type RESET and confirm.
+3. Restart ATAK.
