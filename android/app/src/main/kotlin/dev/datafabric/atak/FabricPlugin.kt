@@ -1188,6 +1188,16 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
 
     private fun settingsPage() = Ui.stack(context, ArachneStyle.SECTION_GAP,
         Ui.section(context, "Connections & data", Ui.stack(context, 0,
+            Ui.toggle(context, "Experimental Tor-only transport",
+                "Requires a local Tor daemon at 127.0.0.1:9050 (SOCKS) and 127.0.0.1:9051 (Control). Every workspace member must use Tor. Applies when a session starts or reopens.",
+                android.widget.Switch(context).apply {
+                    isChecked = TorTransportSetting.enabled(context)
+                    setOnCheckedChangeListener { _, enabled ->
+                        TorTransportSetting.setEnabled(context, enabled)
+                        toast(if (enabled) "Tor-only transport will apply when the workspace session reopens."
+                            else "The default transport will apply when the workspace session reopens.")
+                    }
+                }),
             Ui.link(context, "Packages & storage", "TAK Server, caching and quota · choose a workspace", Ui.Icon.DOWNLOAD) {
                 val records = memberState?.saved.orEmpty().filter { it.memberId != null && !it.ended }
                 if (records.isEmpty()) toast("Join or create a workspace to configure packages and storage.")

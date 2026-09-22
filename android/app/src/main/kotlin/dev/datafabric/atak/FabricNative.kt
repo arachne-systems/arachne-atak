@@ -14,6 +14,7 @@ internal object FabricNative {
     fun load(path: String) { System.load(path) }
     external fun inspectInvitation(request: ByteArray): ByteArray
     external fun create(secret: ByteArray, relayOnly: Boolean, lanLookup: Boolean, localOnly: Boolean): Long
+    external fun createTor(secret: ByteArray): Long
     external fun describe(handle: Long): String
     external fun execute(handle: Long, request: ByteArray): ByteArray
     external fun executeStored(handle: Long, metadata: ByteArray, snapshot: ByteArray): Array<ByteArray>
@@ -57,6 +58,9 @@ internal class NativeAccess(context: Context) {
         lanLookup,
         localOnly,
     ) as Long
+    fun createTor(secret: ByteArray): Long = call(
+        "createTor", arrayOf(ByteArray::class.java), secret,
+    ) as Long
     fun describe(handle: Long): String = call("describe", arrayOf(Long::class.javaPrimitiveType!!), handle) as String
     fun execute(handle: Long, request: ByteArray): ByteArray =
         call("execute", arrayOf(Long::class.javaPrimitiveType!!, ByteArray::class.java), handle, request) as ByteArray
@@ -76,6 +80,19 @@ internal class NativeAccess(context: Context) {
         call("waitForWork", arrayOf(Long::class.javaPrimitiveType!!), handle) as Boolean
     fun cancel(handle: Long) { call("cancel", arrayOf(Long::class.javaPrimitiveType!!), handle) }
     fun close(handle: Long) { call("close", arrayOf(Long::class.javaPrimitiveType!!), handle) }
+}
+
+internal object TorTransportSetting {
+    private const val PREFERENCES = "arachne-network"
+    private const val TOR_ONLY = "tor-only"
+
+    fun enabled(context: Context): Boolean = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+        .getBoolean(TOR_ONLY, false)
+
+    fun setEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
+            .putBoolean(TOR_ONLY, enabled).apply()
+    }
 }
 
 /** Verify a link without allocating an endpoint, membership or saved join. Call off the UI thread. */
@@ -144,11 +161,17 @@ internal class FabricSession(
                 identity = credential
                 val relayOnly = BuildConfig.DEBUG && File(context.noBackupFilesDir, "arachne-relay-only").isFile
                 val wanOnly = BuildConfig.DEBUG && File(context.noBackupFilesDir, "arachne-wan-only").isFile
+                val torOnly = TorTransportSetting.enabled(context)
+                check(!torOnly || (!relayOnly && !wanOnly && !lanOnly)) {
+                    "Conflicting Tor and diagnostic network profiles"
+                }
                 check(!relayOnly || !wanOnly) { "Conflicting diagnostic network profiles" }
                 if (relayOnly) Log.w("Arachne", "NATIVE_RELAY_ONLY_PROFILE")
                 if (wanOnly) Log.w("Arachne", "NATIVE_WAN_ONLY_PROFILE")
+                if (torOnly) Log.w("Arachne", "NATIVE_TOR_ONLY_PROFILE")
                 try {
                     handle = if (lanOnly) bridge.create(credential.secret, false, false, true)
+                    else if (torOnly) bridge.createTor(credential.secret)
                     else bridge.create(credential.secret, relayOnly, !relayOnly && !wanOnly)
                 }
                 finally { credential.secret.fill(0) }

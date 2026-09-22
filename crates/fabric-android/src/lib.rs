@@ -1,7 +1,7 @@
 //! Android JNI adapter for the shared portable fabric runtime.
 use arachne_runtime::{
-    MAX_REQUEST, cancel, close, create_nearby, create_relay, create_wan, create_wan_only, describe,
-    execute, execute_stored,
+    MAX_REQUEST, cancel, close, create_nearby, create_relay, create_tor, create_wan,
+    create_wan_only, describe, execute, execute_stored,
 };
 use jni::{
     JNIEnv,
@@ -71,6 +71,26 @@ pub extern "system" fn Java_dev_arachne_atak_FabricNative_create(
         } else {
             create_wan_only(seed)
         }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_arachne_atak_FabricNative_createTor(
+    mut env: JNIEnv,
+    _: JObject,
+    secret: JByteArray,
+) -> jlong {
+    boundary(&mut env, |env| {
+        if env.get_array_length(&secret).map_err(|e| e.to_string())? != 32 {
+            return Err("endpoint credential must be 32 bytes".into());
+        }
+        let bytes =
+            zeroize::Zeroizing::new(env.convert_byte_array(&secret).map_err(|e| e.to_string())?);
+        let seed = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| "invalid endpoint credential")?;
+        create_tor(seed)
     })
 }
 
