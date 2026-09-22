@@ -48,6 +48,8 @@ Arachne handles the secure membership and connections in the background.
 - Choose what your device shares with each group.
 - Add or remove members and pause a group when you are done.
 - Share live information and ATAK Data Packages with your group.
+- Choose an Iroh transport profile, including Tor-only operation when a local
+  Tor service is available.
 
 ## Who is this for?
 
@@ -111,9 +113,22 @@ their own capabilities while using a shared communication fabric.
 
 Keep invitations and QR codes private. They are access material for a group.
 
+### Tor-only transport (experimental)
+
+Open **Arachne → Settings → Iroh transport**, enable **Use Tor only**, and
+reopen the workspace session. Each member must use Tor and have a local Tor
+daemon available at `127.0.0.1:9050` (SOCKS) and `127.0.0.1:9051` (control).
+
+Tor uses the authenticated Iroh endpoint identity to resolve peers through Tor.
+The Tor profile does not store or use IP address hints and does not fall back to
+direct IP or Iroh relay paths. Workspace-wide publications can still converge
+through the Arachne Gossip overlay; direct recipient and control operations
+still require a reachable endpoint.
+
 > [!WARNING]
 > This is an alpha evaluation build. Current validation covers ATAK-CIV 5.8.0,
-> selected Android environments, and development-scale membership tests.
+> selected Android environments, development-scale membership tests, and a
+> three-device Tor mesh qualification.
 > Evaluate compatibility, network behavior, and operational requirements for
 > your deployment before relying on it in the field. Follow your organization's
 > approved deployment process for operational systems.

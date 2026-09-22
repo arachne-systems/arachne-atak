@@ -64,8 +64,9 @@ flowchart TB
 
 The normal collaboration topology consists of participating endpoints and the
 paths they discover or use. A central collaboration server is not part of the
-required runtime shape. Discovery services return candidate routes, and relay
-services carry encrypted traffic when a direct path is unavailable.
+required runtime shape. Discovery services return candidate routes, relay
+services carry encrypted traffic when a direct path is unavailable, and the
+optional Tor profile uses Tor hidden services without IP hints.
 
 Workspace authority remains in the protected group state. A route provider or
 transport relay has a networking role; membership and data permissions remain
@@ -151,6 +152,7 @@ best available route for each endpoint relationship.
 | Same Wi-Fi or LAN | Discover a local address and establish an authenticated direct path. | Contacts and updates can stay on the local network. |
 | Different networks | Use endpoint lookup and router traversal to attempt a direct internet path. | Phones collaborate across home, cellular, and exercise networks. |
 | Direct path unavailable | Use an encrypted relay path. | Collaboration continues while the relay carries ciphertext. |
+| Tor-only profile | Resolve authenticated Iroh endpoint identities through Tor hidden services. | Tor-enabled members collaborate without direct IP or Iroh relay paths. |
 | Network changes | Refresh hints and reconnect while preserving workspace identity. | A phone moves between Wi-Fi and cellular while remaining in the workspace. |
 
 ```mermaid
@@ -159,10 +161,20 @@ flowchart LR
     ROUTE -->|"Same LAN"| LOCAL["Direct local QUIC"]
     ROUTE -->|"Traversal succeeds"| WAN["Direct WAN QUIC"]
     ROUTE -->|"Direct path unavailable"| FALLBACK["Encrypted relay"]
+    ROUTE -->|"Tor-only selected"| TOR["Tor hidden service"]
 ```
 
 For an ATAK operator, path selection keeps workspace contacts, location
-updates, Chat, and map data moving as the phone changes networks.
+updates, Chat, and map data moving as the phone changes networks. Tor-only
+operation is selected in **Arachne → Settings → Iroh transport** and applies
+when a workspace session starts or reopens. Every member must use Tor with a
+local daemon on SOCKS port `9050` and control port `9051`.
+
+Tor resolution is endpoint-ID based. The Tor profile does not persist observed
+or supplied IP hints and does not use Iroh relay paths. Workspace-wide live
+publications can cross the bounded Gossip neighbor overlay when the workspace
+has not formed a full direct mesh. Direct recipient and control operations
+remain endpoint-to-endpoint and require the selected endpoint to be reachable.
 
 ## 7. Pub/sub and delivery
 
@@ -281,7 +293,7 @@ sequenceDiagram
 | **Kotlin ATAK adapter** | ATAK lifecycle, workspace UI, native data translation, and the bounded JNI/session boundary. |
 | **Portable Rust runtime** | Workspace sessions, security composition, routing, delivery, persistence, and application-neutral APIs. |
 | **OpenMLS** | Group key establishment, protected membership transitions, invitations, and workspace security state. |
-| **Iroh QUIC** | Authenticated endpoint connections, address hints, local discovery, direct paths, and configured relays. |
+| **Iroh QUIC** | Authenticated endpoint connections, address hints, local discovery, direct paths, configured relays, and the Tor custom transport. |
 | **Iroh Gossip** | Bounded workspace-wide live dissemination through a small neighbor overlay. |
 | **Iroh Blobs** | Content-addressed, integrity-checked, resumable transfer for ATAK Data Packages and larger immutable objects. |
 | **Android Keystore and AtomicFile** | Protected endpoint identity and atomic local workspace-state persistence. |
@@ -297,6 +309,9 @@ Qualification continues in these areas:
 
 - Public-internet NAT and relay behavior requires dedicated network testing
   alongside local and emulator testing.
+- Tor custom transport has been exercised with three Android devices. Broader
+  relay-network qualification and recovery under long Tor outages remain under
+  validation.
 - Live Gossip provides bounded active dissemination; offline history uses the
   retained-data path.
 - Larger-object Blobs transfer and retained-data policies remain narrower than
