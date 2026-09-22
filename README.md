@@ -5,7 +5,7 @@
 Arachne is an ATAK plugin that connects your team's devices in a private
 **workspace**. Share locations, messages, map points, drawings, feeds and
 Data Packages through ATAK's existing tools. Every connection is encrypted
-and authenticated.
+and authenticated over a secure mesh.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/promo/assets/arachne-overview-dark.svg">
