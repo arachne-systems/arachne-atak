@@ -14,7 +14,7 @@ and authenticated over its secure mesh.
 
 ## Get started
 
-For this alpha, use **ATAK-CIV 5.8.0** on **Android 8.0 or newer**.
+For this alpha, use **ATAK-CIV 5.8.0.5** on **Android 8.0 or newer**.
 Devices need a usable connection over local Wi-Fi, a LAN or the internet.
 
 > **Alpha evaluation build.** Current validation covers selected Android
@@ -22,7 +22,7 @@ Devices need a usable connection over local Wi-Fi, a LAN or the internet.
 > and networks before operational use, following your organization's approved
 > deployment process.
 
-1. **Install.** [Download Arachne 0.0.2-alpha](https://github.com/arachne-systems/arachne-atak/releases)
+1. **Install.** [Download Arachne 0.0.3-alpha](https://github.com/arachne-systems/arachne-atak/releases/tag/v0.0.3-alpha)
    and install it alongside ATAK-CIV on each device.
 2. **Create.** Open Arachne in ATAK and create a workspace for your team.
 3. **Invite.** Share the invitation link or QR code with your teammates.
@@ -54,6 +54,12 @@ Arachne handles the secure membership and connections in the background.
 - Share live information and ATAK Data Packages with your group.
 - Choose an Iroh transport profile, including Tor-only operation when a local
   Tor service is available.
+
+The portable core supports caller-supplied Iroh relay maps for managed
+deployments. See [Arachne Core](https://github.com/arachne-systems/arachne-core)
+and the [Arachne Relay deployment recipe](https://github.com/arachne-systems/arachne-relay).
+The ATAK plugin currently offers automatic and relay-only profiles, but does
+not let operators enter a custom relay URL.
 
 ## Who is this for?
 
@@ -130,7 +136,7 @@ through the Arachne Gossip overlay; direct recipient and control operations
 still require a reachable endpoint.
 
 > [!WARNING]
-> This is an alpha evaluation build. Current validation covers ATAK-CIV 5.8.0,
+> This is an alpha evaluation build. Current validation covers ATAK-CIV 5.8.0.5,
 > selected Android environments, development-scale membership tests, and a
 > three-device Tor mesh qualification.
 > Evaluate compatibility, network behavior, and operational requirements for
@@ -155,8 +161,9 @@ for protocols, security, delivery and qualification details.
 <details>
 <summary>Build and validation details</summary>
 
-- Arachne: `0.0.2-alpha` (version code `5`)
-- Host: ATAK-CIV `5.8.0` / SDK mapping `5.8.0.4`
+- Arachne: `0.0.3-alpha` (version code `6`)
+- Host: ATAK-CIV `5.8.0.5` / plugin API `com.atakmap.app@5.8.0.CIV`
+- Release: [`v0.0.3-alpha`](https://github.com/arachne-systems/arachne-atak/releases/tag/v0.0.3-alpha)
 - Android: API `26` or newer
 - Architectures: `arm64-v8a` and `x86_64`
 - A development test admitted 500 simulated members across three Android
@@ -171,18 +178,21 @@ for protocols, security, delivery and qualification details.
 
 Use JDK 17, Android SDK with NDK `27.1.12297006`, Rust `1.98.0` with the
 `aarch64-linux-android` and `x86_64-linux-android` targets, and an authorized
-ATAK-CIV `5.8.0.4` SDK obtained separately. The TAK SDK is not included.
+ATAK-CIV `5.8.0.5` SDK obtained separately. The TAK SDK is not included.
 
 ```sh
 git submodule update --init --recursive
 rustup toolchain install 1.98.0
 rustup target add --toolchain 1.98.0 aarch64-linux-android x86_64-linux-android
-FABRIC_TAK_SDK=/path/to/ATAK-CIV-5.8.0.4-SDK \
+FABRIC_TAK_SDK=/path/to/ATAK-CIV-5.8.0.5-SDK \
 ANDROID_HOME=/path/to/android-sdk scripts/build-plugin.sh
 ```
 
 Set `FABRIC_NDK_VERSION` or `FABRIC_NDK_BIN` if the NDK is installed outside
 `$ANDROID_HOME/ndk/27.1.12297006`.
+
+For the repeatable source bundle, TPP handoff, signature verification, and
+GitHub release steps, see the [TPP release process](docs/tpp-release-process.md).
 
 ## Feedback
 
