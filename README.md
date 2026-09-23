@@ -55,11 +55,11 @@ Arachne handles the secure membership and connections in the background.
 - Choose an Iroh transport profile, including Tor-only operation when a local
   Tor service is available.
 
-The portable core supports caller-supplied Iroh relay maps for managed
-deployments. See [Arachne Core](https://github.com/arachne-systems/arachne-core)
+The portable core supports caller-supplied Iroh relay maps, including in its
+relay qualification harness. See [Arachne Core](https://github.com/arachne-systems/arachne-core)
 and the [Arachne Relay deployment recipe](https://github.com/arachne-systems/arachne-relay).
-The ATAK plugin currently offers automatic and relay-only profiles, but does
-not let operators enter a custom relay URL.
+The ATAK plugin currently offers automatic and relay-only profiles, but this
+build does not pass a custom relay URL or map through its settings or native bridge.
 
 ## Who is this for?
 

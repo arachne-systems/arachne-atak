@@ -155,10 +155,13 @@ best available route for each endpoint relationship.
 | Tor-only profile | Resolve authenticated Iroh endpoint identities through Tor hidden services. | Tor-enabled members collaborate without direct IP or Iroh relay paths. |
 | Network changes | Refresh hints and reconnect while preserving workspace identity. | A phone moves between Wi-Fi and cellular while remaining in the workspace. |
 
-The portable core accepts a caller-supplied relay map for operator-managed
-deployments. The ATAK plugin in `0.0.3-alpha` exposes built-in network profiles
-but no custom relay URL or map setting. See [Arachne Core](https://github.com/arachne-systems/arachne-core)
-and the [Arachne Relay deployment recipe](https://github.com/arachne-systems/arachne-relay).
+The portable core accepts caller-supplied relay options for operator-managed
+deployments, and its `real-iroh-qualification` harness can exercise a selected
+relay infrastructure. In `0.0.3-alpha`, the ATAK settings expose built-in
+profiles, while the Android native bridge calls the default `create_relay` API;
+it does not pass custom relay options from the UI. See
+[Arachne Core](https://github.com/arachne-systems/arachne-core) and the
+[Arachne Relay deployment recipe](https://github.com/arachne-systems/arachne-relay).
 
 ```mermaid
 flowchart LR
