@@ -35,6 +35,7 @@ import gov.tak.platform.marshal.MarshalManager
 class FabricPlugin(controller: IServiceController) : IPlugin {
     @Volatile private var workspaces: WorkspaceConnections? = null
     private var workspaceAdapters: WorkspaceAdapters? = null
+    @Volatile private var pttBridge: PttWorkspaceBridge? = null
     private var nearbyInvitations: NearbyInvitations? = null
     private val invitationReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(host: android.content.Context, intent: android.content.Intent) {
@@ -1281,6 +1282,9 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
             if (record.joinPeer == null && !record.ended) actions.add("Invitations" to { navigate(Screen.INVITATIONS) })
         }
         if (!record.ended && current != null) {
+            if (latest.selected.active?.slot == record.slot) {
+                actions.add("Push to talk" to { launchPttFromWorkspace() })
+            }
             actions.add("Pause workspace" to { performOperation("Pause workspace") { workspaces?.pause(record.id) }; Unit })
             val enabled = record.id.toList() in latest.publishing
             actions.add((if (enabled) "Turn workspace sharing off" else "Turn workspace sharing on") to {
@@ -1301,6 +1305,20 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
         ArachneStyle.dialog(MapView.getMapView().context, pagePane).setTitle(record.name)
             .setItems(actions.map { it.first }.toTypedArray()) { _, index -> actions[index].second() }
             .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun launchPttFromWorkspace() {
+        val state = connectionState ?: return
+        val intent = pttBridge?.launchIntent(state)
+        if (intent == null) {
+            toast("Select a connected workspace before opening PTT.")
+            return
+        }
+        try {
+            MapView.getMapView().context.startActivity(intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: android.content.ActivityNotFoundException) {
+            toast("Install Arachne PTT to use voice in this workspace.")
+        }
     }
     private val memberList by lazy { LinearLayout(context).apply { orientation = LinearLayout.VERTICAL } }
     private val workspaceList by lazy { LinearLayout(context).apply { orientation = LinearLayout.VERTICAL } }
@@ -2599,9 +2617,10 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
         }
         return accepted
     }
+    // ATAK tints toolbar icons; keep this transparent mark separate from the opaque brand PNG.
     private val button = ToolbarItem.Builder(
         "Arachne",
-        MarshalManager.marshal(context.getDrawable(R.drawable.fabric_icon), Drawable::class.java, Bitmap::class.java)
+        MarshalManager.marshal(ArachneStyle.toolbarIcon(context), Drawable::class.java, Bitmap::class.java)
     ).setIdentifier("dev.arachne.atak").setListener(object : ToolbarItemAdapter() {
         override fun onClick(item: ToolbarItem) { showPane() }
     }).build()
@@ -2615,16 +2634,25 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
                 Log.i("Arachne", "NATIVE_HTTP_RECOVERY_COMPLETE failures=$failures")
             } catch (error: Exception) { Log.w("Arachne", "NATIVE_HTTP_RECOVERY_FAILED", error) }
         }, "arachne-native-http-recovery").start()
-        val adapters = WorkspaceAdapters({ workspace, request, complete ->
-            workspaces?.resource(workspace, request, complete) == true
-        }) { workspace, topic, bytes, recipients, current, complete ->
-            workspaces?.publish(workspace, topic, bytes, recipients, current, complete) == true
+        val bridge = PttWorkspaceBridge(MapView.getMapView().context) { workspace, topic, bytes, complete ->
+            workspaces?.publish(workspace, topic, bytes, completed = complete) == true
         }
+        pttBridge = bridge
+        val adapters = WorkspaceAdapters(
+            resource = { workspace, request, complete ->
+                workspaces?.resource(workspace, request, complete) == true
+            },
+            publish = { workspace, topic, bytes, recipients, current, complete ->
+                workspaces?.publish(workspace, topic, bytes, recipients, current, complete) == true
+            },
+            pttReceive = bridge::receive,
+        )
         workspaceAdapters = adapters
         var displayedRevision = 0L // Accessed only on the main thread.
         workspaces = WorkspaceConnections(MapView.getMapView().context,
-            CotTopics.nativeDefaults + WorkspaceResources.topics + WorkspaceMissionPackages.topics, adapters::receive) { state ->
+            CotTopics.nativeDefaults + WorkspaceResources.topics + WorkspaceMissionPackages.topics + "streams/ptt", adapters::receive) { state ->
             adapters.bind(state)
+            bridge.update(state)
             mainHandler.post {
                 if (generation == startedGeneration && state.revision > displayedRevision) {
                     displayedRevision = state.revision
@@ -2683,6 +2711,8 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
         AtakBroadcast.getInstance().unregisterReceiver(attentionReceiver)
         attentionNotificationId?.let { NotificationUtil.getInstance().clearNotification(it) }
         currentAttentionKeys = emptySet(); notifiedAttentionKeys = emptySet()
+        pttBridge?.close()
+        pttBridge = null
         workspaceAdapters?.close()
         workspaceAdapters = null
         workspaces?.let { owners ->

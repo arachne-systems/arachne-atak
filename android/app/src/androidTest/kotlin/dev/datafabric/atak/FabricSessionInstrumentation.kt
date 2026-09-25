@@ -43,6 +43,11 @@ class FabricSessionInstrumentation : Instrumentation() {
                 finish(Activity.RESULT_OK, result)
                 return
             }
+            if (options.getString("toolbar_icon_check") == "true") {
+                result.putString("toolbar_icon_result", DesignSystemCheck.checkToolbarIcon(targetContext))
+                finish(Activity.RESULT_OK, result)
+                return
+            }
             if (options.getString("design_system_check") == "true") {
                 result.putString("design_system_result", DesignSystemCheck.run(targetContext, this).toString())
                 finish(Activity.RESULT_OK, result)

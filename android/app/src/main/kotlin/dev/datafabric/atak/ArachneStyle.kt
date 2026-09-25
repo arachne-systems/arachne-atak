@@ -109,6 +109,8 @@ internal object ArachneStyle {
 
     fun color(tone: Tone) = resources.getColor(if (appearance == Appearance.GRAY) tone.gray else tone.dark, null)
     fun drawable(resource: Int) = resources.getDrawable(resource, null).mutate()
+    /** ATAK tints toolbar entries; keep its transparent artwork out of brandIcon(). */
+    fun toolbarIcon(context: Context) = requireNotNull(context.getDrawable(R.drawable.arachne_toolbar_icon)).mutate()
     val pageColor get() = color(Tone.PAGE)
     val surfaceColor get() = color(Tone.SURFACE)
     val textColor get() = color(Tone.TEXT)

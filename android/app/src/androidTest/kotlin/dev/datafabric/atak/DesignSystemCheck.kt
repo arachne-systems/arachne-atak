@@ -20,6 +20,29 @@ import java.util.concurrent.atomic.AtomicReference
 
 /** Real Android resources, fonts, layouts, callbacks and preferences; no fabric state is touched. */
 internal object DesignSystemCheck {
+    fun checkToolbarIcon(context: Context): String {
+        val icon = context.packageManager.getApplicationInfo(context.packageName, 0).icon
+        val name = context.resources.getResourceEntryName(icon)
+        check(name == "arachne_toolbar_icon") {
+            "ATAK plugin entry uses '$name'; expected the transparent toolbar icon"
+        }
+        val drawable = ArachneStyle.toolbarIcon(context)
+        val bitmap = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+        try {
+            drawable.setBounds(0, 0, bitmap.width, bitmap.height)
+            drawable.draw(Canvas(bitmap))
+            check(listOf(0 to 0, 63 to 0, 0 to 63, 63 to 63).all { (x, y) ->
+                Color.alpha(bitmap.getPixel(x, y)) == 0
+            }) { "ATAK tints plugin icons; opaque brand art fills its toolbar tile" }
+            val pixels = IntArray(bitmap.width * bitmap.height)
+            bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+            check(pixels.any { Color.alpha(it) != 0 }) { "Toolbar icon artwork is empty" }
+        } finally {
+            bitmap.recycle()
+        }
+        return "PASS: ATAK toolbar icon has visible artwork and transparent corners"
+    }
+
     fun run(context: Context, instrumentation: Instrumentation): JSONObject {
         val preferencesName = "design-system-test-${UUID.randomUUID()}"
         val isolated = object : ContextWrapper(context) {
@@ -32,6 +55,7 @@ internal object DesignSystemCheck {
             try {
                 ArachneStyle.initialize(context, isolated)
                 check(ArachneStyle.appearance == ArachneStyle.Appearance.DARK)
+                checkToolbarIcon(context)
                 check(ArachneComponents.elapsed(-1) == "0s")
                 check(ArachneComponents.elapsed(59_999) == "59s")
                 check(ArachneComponents.elapsed(60_000) == "1m 00s")
