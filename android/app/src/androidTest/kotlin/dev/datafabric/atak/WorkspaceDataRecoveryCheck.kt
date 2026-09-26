@@ -9,6 +9,7 @@ import org.json.JSONObject
 internal object WorkspaceDataRecoveryCheck {
     private const val CHAT = "chat/messages/v1"
     private const val NATIVE_CHAT = "atak/native/v1/chat"
+    private const val PTT = "streams/ptt"
     private const val PLI = "atak/native/v1/pli"
     private const val FEATURES = "atak/native/v1/features"
     private const val DRAWINGS = "atak/native/v1/drawings"
@@ -147,9 +148,9 @@ internal object WorkspaceDataRecoveryCheck {
             else -> error("Unexpected runtime command: ${request.getString("op")}")
         }
 
-        fun data(context: Context, topics: Set<String> = setOf(CHAT), consumer: (JSONObject, (Boolean) -> Unit) -> Unit = { _, _ -> }, continuity: (String?) -> Unit = {}, reachablePeers: () -> List<ByteArray> = { emptyList() }) =
+        fun data(context: Context, topics: Set<String> = setOf(CHAT), consumer: (JSONObject, (Boolean) -> Unit) -> Unit = { _, _ -> }, deliveryWake: (String) -> Unit = {}, continuity: (String?) -> Unit = {}, reachablePeers: () -> List<ByteArray> = { emptyList() }) =
             WorkspaceData(WorkspaceStore(context), JSONObject().put("workspace", workspace).put("epoch", 0),
-                topics, ::call, consumer, deliveryClock = { now }, reachablePeers = reachablePeers, continuity = continuity)
+                topics, ::call, consumer, deliveryClock = { now }, reachablePeers = reachablePeers, deliveryWake = deliveryWake, continuity = continuity)
 
         fun publication(topic: String = CHAT, counter: Long = 7, member: Int = 20) =
             JSONObject().put("workspace", workspace).put("topic", topic).put("revision", 1)
@@ -224,6 +225,16 @@ internal object WorkspaceDataRecoveryCheck {
             data.tick()
             check(replies.fetched == 1 && replies.fetchedTopics == listOf(NATIVE_CHAT))
         }
+        scenario("ptt_audio_uses_retained_recovery") {
+            val replies = Replies()
+            val states = mutableListOf<String?>()
+            val data = replies.data(context, setOf(PTT), continuity = { states.add(it) })
+            data.discoverCutoff(JSONArray(List(32) { 18 }))
+            replies.cutoffReady = true
+            data.tick()
+            check(replies.fetched == 1 && replies.fetchedTopics == listOf(PTT))
+            check(states.contains("Checking for missed PTT recordings…"))
+        }
         scenario("native_chat_and_pli_both_get_recovery_turns") {
             val replies = Replies()
             val data = replies.data(context, setOf(NATIVE_CHAT, PLI))
@@ -242,7 +253,7 @@ internal object WorkspaceDataRecoveryCheck {
             val replies = Replies()
             replies.currentSourceWaiting = true
             val data = replies.data(context, setOf(PLI))
-            data.tick()
+            data.tick() // Install the selected topic before asking for its current view.
             check(!data.discoverCutoff(null, JSONArray(List(32) { 20 }), PLI))
             check(!data.discoverCutoff(null, JSONArray(List(32) { 20 }), PLI))
             check(replies.currentFetched == 1) { "Offline current source retried in the same interval" }
@@ -323,6 +334,18 @@ internal object WorkspaceDataRecoveryCheck {
             data.interests(emptySet())
             check(!data.drainPending() && handedOff == 1 && completion === accepted && accepted != null)
             // The actual durable acknowledgement path is covered by store/JNI tests.
+        }
+        scenario("accepted_delivery_wakes_pending_drain") {
+            val replies = Replies()
+            replies.pending = replies.publication(PTT)
+            var completion: ((Boolean) -> Unit)? = null
+            var wakeups = 0
+            val data = replies.data(context, setOf(PTT), consumer = { _, complete -> completion = complete },
+                deliveryWake = { topic -> if (topic == PTT) wakeups++ })
+            check(!data.drainPending())
+            check(wakeups == 0 && completion != null)
+            completion!!(true)
+            check(wakeups == 1) { "Accepted PTT media did not wake durable acknowledgement work" }
         }
         for (retry in listOf(false, true)) scenario(if (retry) "retrying_delivery_does_not_block_recovery" else "pending_delivery_does_not_block_recovery") {
             val replies = Replies()
