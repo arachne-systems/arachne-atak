@@ -2646,6 +2646,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
                 workspaces?.publish(workspace, topic, bytes, recipients, current, complete) == true
             },
             pttReceive = bridge::receive,
+            observePli = bridge::observePli,
         )
         workspaceAdapters = adapters
         var displayedRevision = 0L // Accessed only on the main thread.
