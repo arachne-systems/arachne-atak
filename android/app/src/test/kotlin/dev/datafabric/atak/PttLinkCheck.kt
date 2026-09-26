@@ -108,17 +108,22 @@ fun main() {
         check(extras["proof"] === proofMarker) { "proof must be passed through unchanged, whatever type it is" }
     }
 
-    // Protocol mismatch: the version constant is fixed at 1 and nothing else may be mistaken for it.
+    // Protocol mismatch: answersRequest is the actual gate handleRequestOffers uses; it must
+    // accept only VERSION and reject everything else, including the -1 a missing extra reads as.
     run {
         check(PttLinkProtocol.VERSION == 1) { "protocol version constant must be 1 per the link-v2 spec" }
+        check(PttLinkProtocol.answersRequest(1)) { "protocol 1 must be answered" }
         for (bogus in listOf(0, 2, -1, 99)) {
-            check(bogus != PttLinkProtocol.VERSION) { "test setup error: $bogus must differ from VERSION" }
+            check(!PttLinkProtocol.answersRequest(bogus)) { "protocol $bogus must be ignored, not answered" }
         }
     }
 
     // Source scan: the old one-ticket "Push to talk" launch path is replaced, not kept beside the new one.
     val root = findRepoRoot()
     val bridge = File(root, "android/app/src/main/kotlin/dev/datafabric/atak/PttWorkspaceBridge.kt").readText()
+    check("PttLinkProtocol.answersRequest(protocol)" in bridge) {
+        "handleRequestOffers must gate on PttLinkProtocol.answersRequest, not re-implement the comparison inline"
+    }
     check("PLUGIN_SESSION" !in bridge && "fun launchIntent" !in bridge) {
         "the old one-ticket PLUGIN_SESSION launch path must be deleted, not kept beside plugin-link-v2"
     }
@@ -165,32 +170,44 @@ fun main() {
     check("sendGone" !in closeFunction) {
         "close() must not send GONE -- ATAK/the plugin stopping is not the user leaving, removing or ending a workspace"
     }
-    val updateFunction = bridge.substringAfter("fun update(state: WorkspaceConnectionView) {").substringBefore("\n    fun ")
-    check("sendGone(workspace)" in updateFunction && "PttLinkGone.onDrop(" in updateFunction) {
-        "update() must gate GONE through PttLinkGone.onDrop on the saved record's own ended flag, " +
+    val updateLockedFunction = bridge.substringAfter("private fun updateLocked(state: WorkspaceConnectionView): List<Pending> {")
+        .substringBefore("\n    fun observePli(")
+    check("sendGone(workspace)" in updateLockedFunction && "PttLinkGone.onDrop(" in updateLockedFunction) {
+        "updateLocked() must gate GONE through PttLinkGone.onDrop on the saved record's own ended flag, " +
             "not on merely leaving the connected set or on a derived status string"
     }
-    check("state.pauses" !in updateFunction) {
+    check("state.pauses" !in bridge) {
         "GONE must not be decided from a derived pauses status string -- a workspace can drop out of " +
             "scope for reasons unrelated to its pauses entry; use the saved record's ended flag instead"
     }
-
-    // Source scan: update() must serialize and order-guard against out-of-order WorkspaceController
-    // callbacks (they can arrive from different threads), or a stale snapshot can disconnect a peer
-    // or invalidate a ticket for a workspace that has since reconnected.
-    check(Regex("@Synchronized\\s*\\r?\\n\\s*fun update\\(state: WorkspaceConnectionView\\)").containsMatchIn(bridge)) {
-        "update(state) must be @Synchronized so overlapping callbacks cannot interleave its scope/ticket bookkeeping"
+    check("state.revision <= lastRevision" in updateLockedFunction) {
+        "updateLocked() must ignore a snapshot whose revision is not newer than the last one it applied"
     }
-    check("state.revision <= lastRevision" in updateFunction) {
-        "update() must ignore a snapshot whose revision is not newer than the last one it applied"
+
+    // Source scan: update() must serialize against out-of-order/overlapping WorkspaceController
+    // callbacks, AND must not invoke a foreign Pending.complete() while holding its own lock --
+    // that callback came from a WorkspaceController's own receive path, which (like
+    // WorkspaceController.publish) may take its own monitor around completion bookkeeping, and
+    // two linked workspaces' controller threads could then deadlock on each other's locks.
+    check(Regex("synchronized\\(this\\)\\s*\\{\\s*updateLocked\\(state\\)\\s*\\}").containsMatchIn(bridge)) {
+        "update() must run updateLocked() inside synchronized(this) and fire its failed deliveries only after that returns"
+    }
+    check(".complete(" !in updateLockedFunction) {
+        "updateLocked() must not call Pending.complete() itself -- return the failed deliveries " +
+            "(as it does today) so update() can fire them after releasing the bridge's own lock"
+    }
+    check(Regex("private fun disconnectPeer\\(workspace: String\\): List<Pending>").containsMatchIn(bridge) &&
+        Regex("private fun closePeer\\(target: Peer, workspace: String\\): List<Pending>").containsMatchIn(bridge)) {
+        "disconnectPeer/closePeer must return the deliveries they failed instead of completing them inline"
     }
 
     println("PASS: PTT link v2 tickets are per-workspace (independent issue/consume/reissue/invalidate), " +
         "reject expired and reused tickets, the real token is 64 lowercase hex, offer extras carry all 8 " +
-        "typed fields, the protocol constant is versioned, OFFER/GONE share sender identity on API 34+ while " +
-        "still carrying the proof PendingIntent on every API level, GONE fires only from the saved record's " +
-        "ended flag (never a derived status string, transient disconnect, or plugin stop), update() ignores " +
-        "out-of-order snapshots, and the retired PLUGIN_SESSION path is fully removed")
+        "typed fields, protocol mismatch is rejected by answersRequest, OFFER/GONE share sender identity " +
+        "on API 34+ while still carrying the proof PendingIntent on every API level, GONE fires only from " +
+        "the saved record's ended flag (never a derived status string, transient disconnect, or plugin " +
+        "stop), update() ignores out-of-order snapshots and defers Pending.complete() until its own lock " +
+        "is released, and the retired PLUGIN_SESSION path is fully removed")
 }
 
 private fun findRepoRoot(): File {

@@ -107,7 +107,7 @@ internal class PttWorkspaceBridge(
     /** dev.arachne.atak.PTT_REQUEST_OFFERS received from the PTT app. Ignores anything but protocol 1. */
     fun handleRequestOffers(intent: Intent) {
         val protocol = intent.getIntExtra(PttLinkProtocol.EXTRA_PROTOCOL, -1)
-        if (protocol != PttLinkProtocol.VERSION) {
+        if (!PttLinkProtocol.answersRequest(protocol)) {
             Log.i("Arachne", "PTT_LINK_REQUEST_OFFERS_IGNORED protocol=$protocol")
             return
         }
@@ -121,12 +121,22 @@ internal class PttWorkspaceBridge(
         return true
     }
 
-    @Synchronized
     fun update(state: WorkspaceConnectionView) {
+        // The synchronized section only mutates our own state and does Android IPC (sendBroadcast,
+        // Peer.send on our own socket) -- nothing that calls back into a WorkspaceController. The
+        // Pending.complete callbacks we may be dropping here came FROM a WorkspaceController's own
+        // receive path, which (like WorkspaceController.publish) may hold its own monitor around
+        // completion bookkeeping; invoking them while we hold ours could lock controller A while
+        // waiting on controller B and vice versa. So: collect them here, fire them after release.
+        val failedDeliveries = synchronized(this) { updateLocked(state) }
+        failedDeliveries.forEach { it.complete(false) }
+    }
+
+    private fun updateLocked(state: WorkspaceConnectionView): List<Pending> {
         // WorkspaceController callbacks can arrive out of order across threads; FabricPlugin
         // already guards its own display the same way. Without this, a stale snapshot could
         // disconnect a peer or invalidate a ticket for a workspace that has since reconnected.
-        if (state.revision <= lastRevision) return
+        if (state.revision <= lastRevision) return emptyList()
         lastRevision = state.revision
 
         val next = scopesFor(state)
@@ -141,6 +151,7 @@ internal class PttWorkspaceBridge(
 
         val gone = previous.keys - next.keys
         val newlyConnected = next.keys - previous.keys
+        val failed = mutableListOf<Pending>()
 
         for (workspace in gone) {
             // GONE removes the workspace's "net" on the PTT side, so it must fire only when the
@@ -152,7 +163,7 @@ internal class PttWorkspaceBridge(
             // flag -- that is authoritative, unlike inferring intent from a derived status string.
             val record = state.selected.saved.firstOrNull { Hex.encode(it.id) == workspace }
             if (PttLinkGone.onDrop(stillSaved = record != null, ended = record?.ended == true)) sendGone(workspace)
-            disconnectPeer(workspace)
+            failed += disconnectPeer(workspace)
             synchronized(floorLock) { floorRecords.remove(workspace) }
             tickets.invalidate(workspace)
         }
@@ -170,6 +181,7 @@ internal class PttWorkspaceBridge(
             if (selectionChanged) selectedWorkspace?.let(::add)
         }
         for (workspace in toOffer) next[workspace]?.let(::sendOffer)
+        return failed
     }
 
     fun observePli(workspace: ByteArray, member: ByteArray, uid: String, document: org.w3c.dom.Document) =
@@ -256,7 +268,7 @@ internal class PttWorkspaceBridge(
         // closing; a fresh OFFER follows on reconnect once the plugin (and this bridge) restart.
         talkerMap?.close()
         runCatching { server.close() }
-        peers.keys.toList().forEach(::disconnectPeer)
+        peers.keys.toList().forEach { workspace -> disconnectPeer(workspace).forEach { it.complete(false) } }
         timer.shutdownNow()
         tickets.clear()
         synchronized(floorLock) { floorRecords.clear() }
@@ -268,6 +280,9 @@ internal class PttWorkspaceBridge(
         PendingIntent.FLAG_IMMUTABLE,
     )
 
+    /** Synchronized so a REQUEST_OFFERS reply (any thread) and update()'s own offers cannot
+     * interleave issue-then-broadcast for the same workspace; reentrant from updateLocked(). */
+    @Synchronized
     private fun sendOffer(current: Scope) {
         val now = System.currentTimeMillis()
         val ticket = tickets.issue(current.workspace, now)
@@ -333,7 +348,7 @@ internal class PttWorkspaceBridge(
                 && scopes.containsKey(workspace)) { "PTT attachment is expired, already used, or workspace changed" }
             attached = workspace
             val displaced = peers.put(workspace, candidate)
-            if (displaced != null && displaced !== candidate) closePeer(displaced, workspace)
+            if (displaced != null && displaced !== candidate) closePeer(displaced, workspace).forEach { it.complete(false) }
             candidate.socket.soTimeout = 0
             if (!candidate.send(checkNotNull(scopes[workspace]).json("attached"))) return
             while (!closed && peers[workspace] === candidate) handle(workspace, candidate, candidate.read())
@@ -341,7 +356,7 @@ internal class PttWorkspaceBridge(
             if (!closed && error !is EOFException) Log.w("Arachne", "PTT_RPC_DISCONNECTED reason=${error.javaClass.simpleName}")
         } finally {
             val workspace = attached
-            if (workspace != null && peers.remove(workspace, candidate)) closePeer(candidate, workspace)
+            if (workspace != null && peers.remove(workspace, candidate)) closePeer(candidate, workspace).forEach { it.complete(false) }
             else candidate.close()
         }
     }
@@ -606,15 +621,20 @@ internal class PttWorkspaceBridge(
             && left.members == right.members
     }
 
-    private fun disconnectPeer(workspace: String) {
-        peers.remove(workspace)?.let { closePeer(it, workspace) }
+    /** Returns the deliveries that were pending for this workspace, uncompleted: the caller
+     * fires them (never inline here -- see the comment on update()/updateLocked()). */
+    private fun disconnectPeer(workspace: String): List<Pending> {
+        val target = peers.remove(workspace) ?: return emptyList()
+        return closePeer(target, workspace)
     }
 
-    private fun closePeer(target: Peer, workspace: String) {
+    private fun closePeer(target: Peer, workspace: String): List<Pending> {
         target.close()
+        val failed = mutableListOf<Pending>()
         for ((id, delivery) in pending.entries) {
-            if (delivery.workspace == workspace && pending.remove(id, delivery)) delivery.complete(false)
+            if (delivery.workspace == workspace && pending.remove(id, delivery)) failed += delivery
         }
+        return failed
     }
 
     private fun JSONArray.bytes(maximum: Int): ByteArray? {

@@ -36,6 +36,9 @@ internal object PttLinkProtocol {
     /** Both the ticket's own lifetime and the `expiresAt` value reported in the offer:
      * one wall-clock concept, not two (there is no separate elapsedRealtime lifetime). */
     const val OFFER_TICKET_LIFETIME_MS = 60_000L
+
+    /** True only for exactly VERSION; a missing `protocol` extra reads as -1 (never a match). */
+    fun answersRequest(protocol: Int): Boolean = protocol == VERSION
 }
 
 /** Per-workspace PTT link tickets. One live ticket per workspace: issuing a new
