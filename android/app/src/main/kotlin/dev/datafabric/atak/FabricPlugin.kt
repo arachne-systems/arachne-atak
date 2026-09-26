@@ -2655,7 +2655,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
     // ATAK tints toolbar icons; keep this transparent mark separate from the opaque brand PNG.
     private val button = ToolbarItem.Builder(
         "Arachne",
-        MarshalManager.marshal(ArachneStyle.drawable(R.drawable.arachne_toolbar_icon), Drawable::class.java, Bitmap::class.java)
+        MarshalManager.marshal(ArachneStyle.toolbarIcon(context), Drawable::class.java, Bitmap::class.java)
     ).setIdentifier("dev.arachne.atak").setListener(object : ToolbarItemAdapter() {
         override fun onClick(item: ToolbarItem) { showPane() }
     }).build()
