@@ -44,6 +44,13 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
             if (openInvitation(link)) resultCode = android.app.Activity.RESULT_OK
         }
     }
+    // plugin-link-v2: the Arachne PTT app asks whether any workspace wants to link.
+    private val requestOffersReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(host: android.content.Context, intent: android.content.Intent) {
+            if (intent.action != PttLinkProtocol.ACTION_REQUEST_OFFERS) return
+            pttBridge?.handleRequestOffers(intent)
+        }
+    }
     private fun openInvitation(link: String): Boolean {
         if (memberState?.busy == true || workspaceSubmission != null || reviewingInvitation || runCatching { WorkspaceInvitation.decode(link) }.isFailure) return false
         val returnToNearby = screen == Screen.NEARBY
@@ -1316,9 +1323,9 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
             if (record.joinPeer == null && !record.ended) actions.add("Invitations" to { navigate(Screen.INVITATIONS) })
         }
         if (!record.ended && current != null) {
-            if (latest.selected.active?.slot == record.slot) {
-                actions.add("Push to talk" to { launchPttFromWorkspace() })
-            }
+            // Every connected workspace can be linked now (plugin-link-v2 keeps one
+            // ticket per workspace), not only the one currently open in the UI.
+            actions.add("Push to talk" to { launchPttFromWorkspace(record) })
             actions.add("Pause workspace" to { performOperation("Pause workspace") { workspaces?.pause(record.id) }; Unit })
             val enabled = record.id.toList() in latest.publishing
             actions.add((if (enabled) "Turn workspace sharing off" else "Turn workspace sharing on") to {
@@ -1341,15 +1348,18 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
             .setNegativeButton("Cancel", null).show()
     }
 
-    private fun launchPttFromWorkspace() {
-        val state = connectionState ?: return
-        val intent = pttBridge?.launchIntent(state)
-        if (intent == null) {
+    private fun launchPttFromWorkspace(record: LocalWorkspace) {
+        val workspace = Hex.encode(record.id)
+        if (pttBridge?.offerWorkspace(workspace) != true) {
             toast("Select a connected workspace before opening PTT.")
             return
         }
+        val intent = android.content.Intent().setClassName(PttLinkProtocol.PTT_PACKAGE, PttLinkProtocol.PTT_MAIN_ACTIVITY)
+            .setAction(PttLinkProtocol.ACTION_OPEN_WORKSPACE)
+            .putExtra(PttLinkProtocol.EXTRA_WORKSPACE, workspace)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
         try {
-            MapView.getMapView().context.startActivity(intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+            MapView.getMapView().context.startActivity(intent)
         } catch (_: android.content.ActivityNotFoundException) {
             toast("Install Arachne PTT to use voice in this workspace.")
         }
@@ -2719,6 +2729,12 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
         } else {
             receiverContext.registerReceiver(invitationReceiver, filter, InvitationActivity.PERMISSION, mainHandler)
         }
+        val requestOffersFilter = android.content.IntentFilter(PttLinkProtocol.ACTION_REQUEST_OFFERS)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            receiverContext.registerReceiver(requestOffersReceiver, requestOffersFilter, android.content.Context.RECEIVER_EXPORTED)
+        } else {
+            receiverContext.registerReceiver(requestOffersReceiver, requestOffersFilter)
+        }
         AtakBroadcast.getInstance().registerReceiver(attentionReceiver, AtakBroadcast.DocumentedIntentFilter(attentionAction))
         if (BuildConfig.DEBUG) debugControl("install")
         ui.addToolbarItem(button)
@@ -2743,6 +2759,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
         nearbyInvitations?.close()
         nearbyInvitations = null
         MapView.getMapView().context.unregisterReceiver(invitationReceiver)
+        MapView.getMapView().context.unregisterReceiver(requestOffersReceiver)
         if (BuildConfig.DEBUG) debugControl("uninstall")
         AtakBroadcast.getInstance().unregisterReceiver(attentionReceiver)
         attentionNotificationId?.let { NotificationUtil.getInstance().clearNotification(it) }

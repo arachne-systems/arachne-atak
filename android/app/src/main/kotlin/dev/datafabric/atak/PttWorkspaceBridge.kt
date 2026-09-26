@@ -1,5 +1,6 @@
 package dev.arachne.atak
 
+import android.app.PendingIntent
 import android.content.Intent
 import android.content.Context
 import android.util.Base64
@@ -12,16 +13,17 @@ import java.io.EOFException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
-/** Same-device RPC into the selected ATAK workspace. Only protected publications cross it. */
+/** Same-device RPC into every linked ATAK workspace, plus the plugin-link-v2
+ * discovery broadcasts (PttLink.kt) that let the Arachne PTT app find and
+ * attach to them automatically. Only protected publications cross the RPC. */
 internal class PttWorkspaceBridge(
-    context: Context,
+    private val context: Context,
     private val publish: (ByteArray, String, ByteArray, (Result<JSONObject>) -> Unit) -> Boolean,
 ) : AutoCloseable {
     private data class Member(val id: String, val name: String, val administrator: Boolean)
@@ -49,8 +51,8 @@ internal class PttWorkspaceBridge(
             }))
     }
 
-    private data class Ticket(val workspace: String, val expiresAt: Long)
     private data class Pending(val workspace: String, val complete: (Boolean) -> Unit)
+    private data class FloorRecord(val coordinator: String, val authority: PttFloorAuthority)
 
     private class Peer(val socket: Socket) : AutoCloseable {
         private val input = DataInputStream(socket.getInputStream())
@@ -75,72 +77,99 @@ internal class PttWorkspaceBridge(
     }
 
     companion object {
-        const val ACTION_ATTACH = "dev.arachne.ptt.PLUGIN_SESSION"
-        const val EXTRA_PORT = "dev.arachne.ptt.extra.PLUGIN_PORT"
-        const val EXTRA_TICKET = "dev.arachne.ptt.extra.PLUGIN_TICKET"
-        const val EXTRA_WORKSPACE = "dev.arachne.ptt.extra.PLUGIN_WORKSPACE"
         private const val PTT_TOPIC = "streams/ptt"
         private const val MAX_MEDIA_BYTES = 12 * 1024
         private const val MAX_FRAME_BYTES = 256 * 1024
         private const val DELIVERY_TIMEOUT_MS = 5_000L
-        private const val TICKET_LIFETIME_MS = 10 * 60_000L
-        private val random = SecureRandom()
     }
 
     private val server = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
     private val timer: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { task ->
         Thread(task, "arachne-ptt-delivery-timeouts").apply { isDaemon = true }
     }
-    private val tickets = ConcurrentHashMap<String, Ticket>()
+    private val tickets = PttTicketStore()
+    private val peers = ConcurrentHashMap<String, Peer>()
     private val pending = ConcurrentHashMap<String, Pending>()
     private val floorPreferences = context.applicationContext.getSharedPreferences("ptt-floor-authority", Context.MODE_PRIVATE)
     private val talkerMap = if (BuildConfig.DEBUG) PttTalkerMap() else null
     private val localMediaSequence = java.util.concurrent.atomic.AtomicLong()
     private val floorLock = Any()
-    private var floorWorkspace = ""
-    private var floorCoordinator = ""
-    private var floorAuthority = PttFloorAuthority()
-    @Volatile private var scope: Scope? = null
-    @Volatile private var peer: Peer? = null
+    private val floorRecords = mutableMapOf<String, FloorRecord>() // workspace -> state; guarded by floorLock
+    @Volatile private var scopes: Map<String, Scope> = emptyMap()
+    @Volatile private var previousSelected: String? = null
+    private var lastRevision: Long = -1 // written only from the synchronized update()
     @Volatile private var closed = false
 
     init {
         Thread(::acceptLoop, "arachne-ptt-workspace-rpc").apply { isDaemon = true; start() }
     }
 
-    fun launchIntent(state: WorkspaceConnectionView): Intent? {
-        val selected = scopeFor(state) ?: return null
-        val token = ByteArray(32).also(random::nextBytes).joinToString("") { "%02x".format(it) }
-        tickets.clear()
-        tickets[token] = Ticket(selected.workspace, android.os.SystemClock.elapsedRealtime() + TICKET_LIFETIME_MS)
-        return Intent().setClassName("dev.arachne.ptt", "dev.arachne.ptt.MainActivity")
-            .setAction(ACTION_ATTACH)
-            .putExtra(EXTRA_PORT, server.localPort)
-            .putExtra(EXTRA_TICKET, token)
-            .putExtra(EXTRA_WORKSPACE, selected.workspace)
+    /** dev.arachne.atak.PTT_REQUEST_OFFERS received from the PTT app. Ignores anything but protocol 1. */
+    fun handleRequestOffers(intent: Intent) {
+        val protocol = intent.getIntExtra(PttLinkProtocol.EXTRA_PROTOCOL, -1)
+        if (protocol != PttLinkProtocol.VERSION) {
+            Log.i("Arachne", "PTT_LINK_REQUEST_OFFERS_IGNORED protocol=$protocol")
+            return
+        }
+        scopes.values.forEach(::sendOffer)
     }
 
+    /** Explicit "Push to talk" from the workspace menu: offer this one workspace. True if it is linkable. */
+    fun offerWorkspace(workspace: String): Boolean {
+        val current = scopes[workspace] ?: return false
+        sendOffer(current)
+        return true
+    }
+
+    @Synchronized
     fun update(state: WorkspaceConnectionView) {
-        val next = scopeFor(state)
-        val previous = scope
-        if (sameScope(next, previous)) return
-        scope = next
-        talkerMap?.bind(next?.workspace, next?.members?.associate { it.id to it.name }.orEmpty())
-        synchronized(floorLock) {
-            if (next?.workspace != floorWorkspace || next?.floorCoordinator.orEmpty() != floorCoordinator)
-                restoreFloor(next?.workspace.orEmpty(), next?.floorCoordinator.orEmpty())
+        // WorkspaceController callbacks can arrive out of order across threads; FabricPlugin
+        // already guards its own display the same way. Without this, a stale snapshot could
+        // disconnect a peer or invalidate a ticket for a workspace that has since reconnected.
+        if (state.revision <= lastRevision) return
+        lastRevision = state.revision
+
+        val next = scopesFor(state)
+        val previous = scopes
+        scopes = next
+
+        val selectedWorkspace = state.selected.active?.id?.let(Hex::encode)?.takeIf { it in next }
+        val selectionChanged = selectedWorkspace != null && selectedWorkspace != previousSelected
+        previousSelected = selectedWorkspace
+        val selectedScope = selectedWorkspace?.let(next::get)
+        talkerMap?.bind(selectedScope?.workspace, selectedScope?.members?.associate { it.id to it.name }.orEmpty())
+
+        val gone = previous.keys - next.keys
+        val newlyConnected = next.keys - previous.keys
+
+        for (workspace in gone) {
+            // GONE removes the workspace's "net" on the PTT side, so it must fire only when the
+            // user actually left, removed or ended the workspace -- never for a merely transient
+            // disconnect (paused, stopped, or a workspace that is still saved but not currently
+            // scoped) and never for ATAK/the plugin stopping. PTT notices a transient disconnect
+            // on its own, from the loopback link closing. state.selected.saved is the full,
+            // ground-truth list of every known (non-hidden) record, each with its own `ended`
+            // flag -- that is authoritative, unlike inferring intent from a derived status string.
+            val record = state.selected.saved.firstOrNull { Hex.encode(it.id) == workspace }
+            if (PttLinkGone.onDrop(stillSaved = record != null, ended = record?.ended == true)) sendGone(workspace)
+            disconnectPeer(workspace)
+            synchronized(floorLock) { floorRecords.remove(workspace) }
+            tickets.invalidate(workspace)
         }
-        val connectedPeer = peer ?: return
-        if (next == null) {
-            connectedPeer.send(JSONObject().put("op", "scope").put("ready", false))
-        } else {
-            connectedPeer.send(next.json("scope"))
-        }
-        if (previous?.workspace != next?.workspace) {
-            for ((id, delivery) in pending.entries) {
-                if (delivery.workspace != next?.workspace && pending.remove(id, delivery)) delivery.complete(false)
+
+        for ((workspace, current) in next) {
+            val previousScope = previous[workspace]
+            if (previousScope == null || previousScope.floorCoordinator != current.floorCoordinator) {
+                synchronized(floorLock) { restoreFloor(workspace, current.floorCoordinator) }
             }
+            if (!sameScope(current, previousScope)) peers[workspace]?.send(current.json("scope"))
         }
+
+        val toOffer = LinkedHashSet<String>().apply {
+            addAll(newlyConnected)
+            if (selectionChanged) selectedWorkspace?.let(::add)
+        }
+        for (workspace in toOffer) next[workspace]?.let(::sendOffer)
     }
 
     fun observePli(workspace: ByteArray, member: ByteArray, uid: String, document: org.w3c.dom.Document) =
@@ -149,10 +178,10 @@ internal class PttWorkspaceBridge(
     fun receive(publication: JSONObject, complete: (Boolean) -> Unit) {
         val topic = publication.optString("topic")
         if (topic != PTT_TOPIC) { complete(false); return }
-        val active = scope
         val workspace = publication.optJSONArray("workspace")?.bytesHex()
-        if (active == null || workspace != active.workspace) {
-            // Voice from an unselected workspace is intentionally not replayed into PTT.
+        val active = workspace?.let(scopes::get)
+        if (active == null) {
+            // Voice from a workspace we are not tracking is intentionally not replayed into PTT.
             complete(true)
             return
         }
@@ -186,8 +215,8 @@ internal class PttWorkspaceBridge(
                         complete(false)
                         return
                     }
-                    observeFloorMessage(message)
-                    sendFloorToLocalApp(author, message)
+                    observeFloorMessage(active.workspace, message)
+                    sendFloorToLocalApp(active.workspace, author, message)
                     complete(true)
                     return
                 }
@@ -195,9 +224,9 @@ internal class PttWorkspaceBridge(
             return
         }
         talkerMap?.media(active.workspace, author, sequence, payload)
-        val connectedPeer = peer
+        val connectedPeer = peers[active.workspace]
         if (connectedPeer == null) {
-            Log.i("Arachne", "PTT_PUBLICATION_DROPPED reason=ptt_not_attached")
+            Log.i("Arachne", "PTT_PUBLICATION_DROPPED reason=ptt_not_attached workspace=${active.workspace}")
             complete(true)
             return
         }
@@ -222,11 +251,65 @@ internal class PttWorkspaceBridge(
     override fun close() {
         if (closed) return
         closed = true
+        // No GONE here: ATAK/the plugin stopping is not the user leaving, removing or ending a
+        // workspace. PTT keeps its nets in place and shows "no link" from the loopback link
+        // closing; a fresh OFFER follows on reconnect once the plugin (and this bridge) restart.
         talkerMap?.close()
         runCatching { server.close() }
-        disconnect(peer)
+        peers.keys.toList().forEach(::disconnectPeer)
         timer.shutdownNow()
         tickets.clear()
+        synchronized(floorLock) { floorRecords.clear() }
+    }
+
+    private fun proof(): PendingIntent = PendingIntent.getBroadcast(
+        context, 0,
+        Intent(PttLinkProtocol.ACTION_PROOF).setPackage(PttLinkProtocol.ATAK_PACKAGE),
+        PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    private fun sendOffer(current: Scope) {
+        val now = System.currentTimeMillis()
+        val ticket = tickets.issue(current.workspace, now)
+        val extras = PttOfferExtras.build(
+            workspace = current.workspace, workspaceName = current.workspaceName, memberName = current.memberName,
+            port = server.localPort, ticket = ticket, expiresAt = now + PttLinkProtocol.OFFER_TICKET_LIFETIME_MS,
+            proof = proof(),
+        )
+        sendExplicitBroadcast(withExtras(Intent(PttLinkProtocol.ACTION_OFFER).setPackage(PttLinkProtocol.PTT_PACKAGE), extras))
+        Log.i("Arachne", "PTT_LINK_OFFER_SENT workspace=${current.workspace}")
+    }
+
+    private fun sendGone(workspace: String) {
+        val intent = Intent(PttLinkProtocol.ACTION_GONE).setPackage(PttLinkProtocol.PTT_PACKAGE)
+            .putExtra(PttLinkProtocol.EXTRA_PROTOCOL, PttLinkProtocol.VERSION)
+            .putExtra(PttLinkProtocol.EXTRA_WORKSPACE, workspace)
+            .putExtra(PttLinkProtocol.EXTRA_PROOF, proof())
+        sendExplicitBroadcast(intent)
+        Log.i("Arachne", "PTT_LINK_GONE_SENT workspace=$workspace")
+    }
+
+    /** OFFER/GONE both carry the `proof` PendingIntent on every API level. On 34+ the broadcast
+     * itself also shares the sender's identity, so the PTT app can check sentFromUid == ATAK's uid
+     * without falling back to the proof's creatorUid (still checked on older APIs). */
+    private fun sendExplicitBroadcast(intent: Intent) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            context.sendBroadcast(intent, null,
+                android.app.BroadcastOptions.makeBasic().setShareIdentityEnabled(true).toBundle())
+        } else {
+            context.sendBroadcast(intent)
+        }
+    }
+
+    private fun withExtras(intent: Intent, extras: Map<String, Any>): Intent {
+        for ((key, value) in extras) when (value) {
+            is Int -> intent.putExtra(key, value)
+            is Long -> intent.putExtra(key, value)
+            is String -> intent.putExtra(key, value)
+            is PendingIntent -> intent.putExtra(key, value)
+            else -> error("Unsupported PTT offer extra \"$key\" of type ${value::class}")
+        }
+        return intent
     }
 
     private fun acceptLoop() {
@@ -238,53 +321,52 @@ internal class PttWorkspaceBridge(
     }
 
     private fun serve(candidate: Peer) {
+        var attached: String? = null
         try {
             candidate.socket.soTimeout = 10_000
             val hello = candidate.read()
+            val workspace = hello.optString("workspace")
             val ticketText = hello.optString("ticket")
-            val ticket = tickets[ticketText]
-            val current = scope
-            require(hello.optString("op") == "attach" && ticket != null
-                && ticket.expiresAt >= android.os.SystemClock.elapsedRealtime()
-                && ticket.workspace == hello.optString("workspace")
-                && current?.workspace == ticket.workspace
-                && tickets.remove(ticketText, ticket)) { "PTT attachment is expired, already used, or workspace changed" }
-            synchronized(this) {
-                disconnect(peer)
-                peer = candidate
-            }
+            val now = System.currentTimeMillis()
+            require(hello.optString("op") == "attach" && workspace.isNotEmpty()
+                && tickets.consume(ticketText, workspace, now)
+                && scopes.containsKey(workspace)) { "PTT attachment is expired, already used, or workspace changed" }
+            attached = workspace
+            val displaced = peers.put(workspace, candidate)
+            if (displaced != null && displaced !== candidate) closePeer(displaced, workspace)
             candidate.socket.soTimeout = 0
-            if (!candidate.send(checkNotNull(current).json("attached"))) return
-            while (!closed && peer === candidate) handle(candidate, candidate.read())
+            if (!candidate.send(checkNotNull(scopes[workspace]).json("attached"))) return
+            while (!closed && peers[workspace] === candidate) handle(workspace, candidate, candidate.read())
         } catch (error: Exception) {
             if (!closed && error !is EOFException) Log.w("Arachne", "PTT_RPC_DISCONNECTED reason=${error.javaClass.simpleName}")
         } finally {
-            if (peer === candidate) disconnect(candidate)
+            val workspace = attached
+            if (workspace != null && peers.remove(workspace, candidate)) closePeer(candidate, workspace)
             else candidate.close()
         }
     }
 
-    private fun handle(client: Peer, request: JSONObject) {
+    private fun handle(workspace: String, client: Peer, request: JSONObject) {
         when (request.optString("op")) {
             "ack" -> {
                 val id = request.optString("id")
                 pending.remove(id)?.let { delivery ->
-                    delivery.complete(request.optBoolean("stored") && scope?.workspace == delivery.workspace)
+                    delivery.complete(request.optBoolean("stored") && delivery.workspace == workspace && scopes.containsKey(workspace))
                 }
             }
-            "publish" -> publish(client, request)
+            "publish" -> publish(workspace, client, request)
             else -> client.send(JSONObject().put("op", "response").put("id", request.optString("id"))
                 .put("accepted", false).put("error", "unsupported PTT operation"))
         }
     }
 
-    private fun publish(client: Peer, request: JSONObject) {
-        val active = scope
-        val workspace = request.optString("workspace")
+    private fun publish(workspace: String, client: Peer, request: JSONObject) {
+        val active = scopes[workspace]
+        val requestWorkspace = request.optString("workspace")
         val topic = request.optString("topic")
         val payload = runCatching { Base64.decode(request.getString("payload"), Base64.NO_WRAP) }.getOrNull()
         val id = request.optString("id")
-        if (active == null || peer !== client || workspace != active.workspace || topic != PTT_TOPIC
+        if (active == null || peers[workspace] !== client || requestWorkspace != active.workspace || topic != PTT_TOPIC
             || payload == null || payload.isEmpty() || payload.size > MAX_MEDIA_BYTES || id.isBlank()) {
             client.send(JSONObject().put("op", "response").put("id", id).put("accepted", false)
                 .put("error", "selected workspace or PTT payload is unavailable"))
@@ -332,8 +414,8 @@ internal class PttWorkspaceBridge(
         localRequestId: String = "",
     ) {
         val decision = synchronized(floorLock) {
-            floorAuthority.request(request.channel, speaker, request.transmission, System.currentTimeMillis())
-                .also { persistFloor() }
+            floorAuthorityFor(active.workspace).request(request.channel, speaker, request.transmission, System.currentTimeMillis())
+                .also { persistFloor(active.workspace) }
         }
         val response = when (decision) {
             is PttFloorDecision.Granted -> PttFloorMessage(
@@ -352,18 +434,18 @@ internal class PttWorkspaceBridge(
             .put("accepted", true).put("queued", true).put("remote_accepted", 1).put("failed", 0))
         broadcastFloor(active, response) { accepted ->
             if (accepted) {
-                if (speaker.equals(active.member, ignoreCase = true)) sendFloorToLocalApp(active.member, response)
+                if (speaker.equals(active.member, ignoreCase = true)) sendFloorToLocalApp(active.workspace, active.member, response)
             } else {
                 if (response.action == PttFloorAction.GRANT) {
                     synchronized(floorLock) {
-                        floorAuthority.release(request.channel, speaker, request.transmission)
-                        persistFloor()
+                        floorAuthorityFor(active.workspace).release(request.channel, speaker, request.transmission)
+                        persistFloor(active.workspace)
                     }
                 }
                 if (speaker.equals(active.member, ignoreCase = true)) {
-                    sendFloorToLocalApp(active.member, PttFloorMessage(
+                    sendFloorToLocalApp(active.workspace, active.member, PttFloorMessage(
                         PttFloorAction.BUSY, request.channel, request.transmission,
-                        generation = floorAuthority.generation,
+                        generation = synchronized(floorLock) { floorAuthorityFor(active.workspace).generation },
                     ))
                 }
             }
@@ -378,8 +460,8 @@ internal class PttWorkspaceBridge(
         localRequestId: String = "",
     ) {
         val decision = synchronized(floorLock) {
-            floorAuthority.release(request.channel, speaker, request.transmission).also {
-                if (it !is PttFloorDecision.Ignored) persistFloor()
+            floorAuthorityFor(active.workspace).release(request.channel, speaker, request.transmission).also {
+                if (it !is PttFloorDecision.Ignored) persistFloor(active.workspace)
             }
         }
         localClient?.send(JSONObject().put("op", "response").put("id", localRequestId)
@@ -389,7 +471,7 @@ internal class PttWorkspaceBridge(
                 PttFloorAction.RELEASED, request.channel, request.transmission, generation = decision.generation,
             )) { accepted ->
                 if (accepted && speaker.equals(active.member, ignoreCase = true)) {
-                    sendFloorToLocalApp(active.member, PttFloorMessage(
+                    sendFloorToLocalApp(active.workspace, active.member, PttFloorMessage(
                         PttFloorAction.RELEASED, request.channel, request.transmission,
                         generation = decision.generation,
                     ))
@@ -412,36 +494,37 @@ internal class PttWorkspaceBridge(
         if (!queued) result(false)
     }
 
-    private fun sendFloorToLocalApp(author: String, message: PttFloorMessage) {
-        peer?.send(JSONObject().put("op", "floor").put("speaker", author)
+    private fun sendFloorToLocalApp(workspace: String, author: String, message: PttFloorMessage) {
+        peers[workspace]?.send(JSONObject().put("op", "floor").put("speaker", author)
             .put("payload", Base64.encodeToString(PttFloorWire.encode(message), Base64.NO_WRAP)))
     }
 
-    private fun observeFloorMessage(message: PttFloorMessage) {
+    private fun observeFloorMessage(workspace: String, message: PttFloorMessage) {
         synchronized(floorLock) {
+            val authority = floorAuthorityFor(workspace)
             when (message.action) {
-                PttFloorAction.GRANT -> floorAuthority.observeGrant(PttFloorLease(
+                PttFloorAction.GRANT -> authority.observeGrant(PttFloorLease(
                     message.channel, message.holder, message.transmission, message.generation, message.expiresAtMillis,
                 ))
-                PttFloorAction.BUSY -> if (message.holder.isNotEmpty()) floorAuthority.observeGrant(PttFloorLease(
+                PttFloorAction.BUSY -> if (message.holder.isNotEmpty()) authority.observeGrant(PttFloorLease(
                     message.channel, message.holder, message.holderTransmission, message.generation, message.expiresAtMillis,
                 ))
-                PttFloorAction.RELEASED -> floorAuthority.observeRelease(
+                PttFloorAction.RELEASED -> authority.observeRelease(
                     message.channel, message.transmission, message.generation,
                 )
                 else -> return
             }
-            persistFloor()
+            persistFloor(workspace)
         }
     }
 
+    /** Guarded by floorLock. */
+    private fun floorAuthorityFor(workspace: String): PttFloorAuthority =
+        floorRecords.getOrPut(workspace) { FloorRecord("", PttFloorAuthority()) }.authority
+
+    /** Guarded by floorLock. */
     private fun restoreFloor(workspace: String, coordinator: String) {
-        floorWorkspace = workspace
-        floorCoordinator = coordinator
-        if (workspace.isEmpty()) {
-            floorAuthority = PttFloorAuthority()
-            return
-        }
+        if (workspace.isEmpty()) return
         val prefix = "$workspace:$coordinator"
         val legacyPrefix = "$prefix:${PttFloorWire.DEFAULT_CHANNEL}"
         val generation = maxOf(
@@ -467,16 +550,18 @@ internal class PttWorkspaceBridge(
             if (holder.isNullOrEmpty() || transmission.isNullOrEmpty() || expiresAt <= now) null
             else channel to PttFloorLease(channel, holder, transmission, generation, expiresAt)
         }.toMap()
-        floorAuthority = PttFloorAuthority(generation, leases)
+        floorRecords[workspace] = FloorRecord(coordinator, PttFloorAuthority(generation, leases))
     }
 
-    private fun persistFloor() {
-        if (floorWorkspace.isEmpty()) return
-        val prefix = "$floorWorkspace:$floorCoordinator"
-        val leases = floorAuthority.leases().associateBy(PttFloorLease::channel)
+    /** Guarded by floorLock. */
+    private fun persistFloor(workspace: String) {
+        if (workspace.isEmpty()) return
+        val record = floorRecords[workspace] ?: return
+        val prefix = "$workspace:${record.coordinator}"
+        val leases = record.authority.leases().associateBy(PttFloorLease::channel)
         val previousChannels = floorPreferences.getStringSet("$prefix:channels", emptySet()).orEmpty().toSet()
         val editor = floorPreferences.edit()
-            .putLong("$prefix:generation", floorAuthority.generation)
+            .putLong("$prefix:generation", record.authority.generation)
             .putStringSet("$prefix:channels", leases.keys)
         (previousChannels - leases.keys).forEach { channel ->
             val leasePrefix = "$prefix:lease:$channel"
@@ -494,20 +579,24 @@ internal class PttWorkspaceBridge(
         check(editor.commit()) { "Could not persist the PTT floor lease" }
     }
 
-    private fun scopeFor(state: WorkspaceConnectionView): Scope? {
-        val view = state.selected
-        val record = view.active ?: return null
-        if (view.busy || view.attention || record.ended || record.memberId == null || record.joinPeer != null) return null
-        val connected = state.connected.singleOrNull { it.active?.slot == record.slot } ?: return null
-        val members = connected.members.map {
-            Member(it.id, it.name.orEmpty().ifBlank { "Member ${it.id.take(8)}" }, it.administrator)
+    /** One Scope per currently connected workspace (not just the UI-selected one), so
+     * every linked workspace can be offered, ticketed and served concurrently. Busy/attention
+     * flags on the entry are intentionally not gated on here: a transient busy workspace keeps
+     * its last-known scope instead of appearing to disconnect and reconnect. */
+    private fun scopesFor(state: WorkspaceConnectionView): Map<String, Scope> {
+        val result = LinkedHashMap<String, Scope>()
+        for (view in state.connected) {
+            val record = view.active ?: continue
+            val memberId = record.memberId?.let(Hex::encode) ?: continue
+            val members = view.members.map {
+                Member(it.id, it.name.orEmpty().ifBlank { "Member ${it.id.take(8)}" }, it.administrator)
+            }
+            val localName = members.firstOrNull { it.id == memberId }?.name ?: continue
+            val workspace = Hex.encode(record.id)
+            result[workspace] = Scope(workspace, record.id.copyOf(), record.sharedName ?: record.legacyName,
+                memberId, localName, members)
         }
-        val memberId = Hex.encode(record.memberId)
-        if (members.none { it.id == memberId }) return null
-        val localName = members.firstOrNull { it.id == memberId }?.name
-            ?: return null
-        return Scope(Hex.encode(record.id), record.id.copyOf(), record.sharedName ?: record.legacyName,
-            memberId, localName, members)
+        return result
     }
 
     private fun sameScope(left: Scope?, right: Scope?): Boolean = when {
@@ -517,12 +606,14 @@ internal class PttWorkspaceBridge(
             && left.members == right.members
     }
 
-    private fun disconnect(target: Peer?) {
-        if (target == null) return
-        synchronized(this) { if (peer === target) peer = null }
+    private fun disconnectPeer(workspace: String) {
+        peers.remove(workspace)?.let { closePeer(it, workspace) }
+    }
+
+    private fun closePeer(target: Peer, workspace: String) {
         target.close()
         for ((id, delivery) in pending.entries) {
-            if (pending.remove(id, delivery)) delivery.complete(false)
+            if (delivery.workspace == workspace && pending.remove(id, delivery)) delivery.complete(false)
         }
     }
 
