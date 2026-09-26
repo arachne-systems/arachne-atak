@@ -220,6 +220,8 @@ internal object DebugControl {
             // Recreates Arachne state in this ATAK process; retain the separate
             // debug rig identity so the caller stays connected.
             "reset" -> {
+                // All Arachne state includes the transport choice: a kept Tor-only setting stops the node.
+                IrohTransportSetting.resetToDefaults(MapView.getMapView().context)
                 val done = java.util.concurrent.CompletableFuture<Result<Unit>>()
                 main.post { plugin.resetState("debug-rig") { done.complete(it) } }
                 done.get(60, TimeUnit.SECONDS).getOrThrow()
