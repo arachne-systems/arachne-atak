@@ -1070,6 +1070,7 @@ internal class WorkspaceController(
         // A name update keeps the same crypto epoch and delivery owner, including
         // pending acknowledgements, recovery progress and subscription timers.
         if (data != null && dataEpoch == metadata.getLong("epoch")) return
+        val workspaceId = record.id.copyOf()
         val catalog = feeds ?: WorkspaceFeeds(context, metadata.getJSONArray("workspace").bytes()).also { feeds = it }
         val choices = topicChoices ?: WorkspaceTopics(context, metadata.getJSONArray("workspace").bytes(), dataTopics).also { topicChoices = it }
         val consumer: (JSONObject, (Boolean) -> Unit) -> Unit = { value, complete ->
@@ -1089,12 +1090,38 @@ internal class WorkspaceController(
             }
         }
         dataEpoch = metadata.getLong("epoch")
-        data = WorkspaceData(store, metadata, choices.interests() + WorkspaceFeeds.CATALOG + WorkspaceResources.CATALOG + WorkspaceResources.CLAIMS + catalog.interests(), { callOptional(owner, it) }, consumer) { status ->
-            if (continuityStatus != status) {
-                continuityStatus = status
-                continuityChangedAt = System.currentTimeMillis()
-                emit("Workspace ready.", false)
+        data = WorkspaceData(
+            store,
+            metadata,
+            choices.interests() + WorkspaceFeeds.CATALOG + WorkspaceResources.CATALOG + WorkspaceResources.CLAIMS + catalog.interests(),
+            { callOptional(owner, it) },
+            consumer,
+            deliveryWake = { topic ->
+                if (topic == "streams/ptt") wakePttDeliveryDrain(owner, workspaceId, epoch)
+            },
+            continuity = { status ->
+                if (continuityStatus != status) {
+                    continuityStatus = status
+                    continuityChangedAt = System.currentTimeMillis()
+                    emit("Workspace ready.", false)
+                }
+            },
+        )
+    }
+
+    private fun wakePttDeliveryDrain(owner: FabricSession, workspace: ByteArray, epoch: Long) {
+        try {
+            worker.execute {
+                if (closed || session !== owner || dataEpoch != epoch || active?.id?.contentEquals(workspace) != true) return@execute
+                try { data?.drainPending() }
+                catch (error: Exception) {
+                    closeSession()
+                    Log.e("Arachne", "WORKSPACE_DATA_SAVE_FAILED", error)
+                    emit("Shared data stopped. Open the saved workspace to recover.", false, true)
+                }
             }
+        } catch (_: RejectedExecutionException) {
+            // Session shutdown already owns the pending durable acknowledgement.
         }
     }
 
