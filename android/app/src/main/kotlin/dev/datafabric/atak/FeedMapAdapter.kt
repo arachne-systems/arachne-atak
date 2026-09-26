@@ -30,25 +30,11 @@ internal fun parseCotFeedObservation(
     now: Long,
 ): FeedMapObservation {
     val document = NativeCotProjection.parse(payload)
-    val root = document.documentElement
-    require(root.getAttribute("type") in setOf("a-f-G-U-C", "a-n-A-C"))
-    val identity = root.getAttribute("uid").also {
-        require(it.isNotBlank() && it.length <= 128 && it.none { char -> char.isISOControl() })
-    }
-    val observedAt = Instant.parse(root.getAttribute("time")).toEpochMilli()
-    require(Instant.parse(root.getAttribute("start")).toEpochMilli() == observedAt)
-    val expiresAt = Instant.parse(root.getAttribute("stale")).toEpochMilli()
-    require(observedAt in Math.subtractExact(now, 60_000)..Math.addExact(now, 10_000))
-    require(expiresAt > now && expiresAt <= Math.addExact(observedAt, 60_000))
-
-    val point = NativeCotProjection.elements(root, "point").single()
-    val latitude = point.getAttribute("lat").toDouble().also { require(it.isFinite() && it in -90.0..90.0) }
-    val longitude = point.getAttribute("lon").toDouble().also { require(it.isFinite() && it in -180.0..180.0) }
-    val uid = CotIdentity.receivedObject(workspace, member, "$topic/$identity")
-    root.setAttribute("uid", uid)
+    val projected = projectCotFeed(document, workspace, member, topic, now)
     val event = CotEvent.parse(CotXml.decode(NativeCotProjection.encode(document)))
     require(event.isValid)
-    return FeedMapObservation(event, uid, identity, observedAt, expiresAt, latitude, longitude)
+    return FeedMapObservation(event, projected.uid, projected.identity, projected.observedAt,
+        projected.expiresAt, projected.latitude, projected.longitude)
 }
 
 /** Maps selected CoT and legacy ADS-B feeds. */
