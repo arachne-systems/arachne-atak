@@ -215,4 +215,39 @@ No Cargo target was created. Library hashes:
 | arm64-v8a | `6345e5e03e39b67af3724e0c2b137aad6fb263dc6357328b1acec06ae5c1b9a5` |
 | x86_64 | `f376ec9583d7376d5cbebd00ce074057c8297af8c96b594f34603fd28583b6a7` |
 
-Final checks and artifact hashes are recorded below after the final build.
+### Final source and results
+
+Final code source: `0cf04b59d4e9ef90c0031d31e09b33c1285be78b`, clean before the
+build. The receipt-only commit after it changes no Kotlin, build or native code.
+`/tmp/lane-f-final-build-source.json` records the source and native input hashes.
+
+| Check | Result |
+|---|---|
+| Talker TDD | RED: eight missing-behavior failures; GREEN: ten scenarios pass. `/tmp/lane-f-talker-red.log`, `/tmp/lane-f-talker-green.log`. |
+| Feed projection TDD | RED: six field/scoping checks fail; GREEN: all six pass. `/tmp/lane-f-feed-red.log`, `/tmp/lane-f-feed-green.log`. |
+| Final portable checks | Seven check mains pass, including the 16 new talker/feed scenarios, drain, directed transfer, join backoff, reset confirmation and streaming resource-file checks. `/tmp/lane-f-final-host-checks.log`. |
+| Final Android build | PASS in 20 seconds: debug app APK, Android test APK and JVM check classes. `/tmp/lane-f-final-android-build.log`. |
+| Toolbar guard and source preservation | PASS. `verifyToolbarIconContract` ran; guard, icon, style, Rust, Cargo and Core gitlink have no diff from the integration base. |
+| Script syntax and diff whitespace | PASS. |
+| Runtime JNI, rendered ATAK map and device instrumentation | Not run. No device install, process stop or data clear. |
+
+The host runner is `scripts/check-host.sh`, after
+`:app:compileCivDebugUnitTestKotlin`. Run it outside the build lock, with CPUs
+8–11. These are executable Kotlin checks, not JUnit discovery counts. The
+older roster allocation check needs a host `org.json` runtime and was not run.
+The CoT Android instrumentation scenario compiled into the test APK; it was not
+executed. The pure feed checks prove field validation and scoped identifiers,
+not ATAK rendering or Android XML parser behavior.
+
+The final build command replaces `:app:compileCivDebugAndroidTestKotlin` in the
+command above with `:app:assembleCivDebugAndroidTest`. APKs remain local:
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| `android/app/build/outputs/apk/civ/debug/app-civ-debug.apk` | 30,858,091 | `a2bca648fac28c2c0558ac4caf84906f341bff0b4d089fd04c95aa3b42fad8e1` |
+| `android/app/build/outputs/apk/androidTest/civ/debug/app-civ-debug-androidTest.apk` | 235,084 | `520d0503d5361e4feedc12c020b87ca7b436eb3b6e8c3482100ca7046d87bede` |
+
+`/tmp/lane-f-artifacts.json` records absolute paths and APK contents. The app
+contains the two expected JNI ABIs. This worktree holds about 84 MiB of local
+inputs/check jars and 274 MiB of Android build artifacts. There is no Rust build
+cache to clean. The APKs and receipts remain available for the lead's review.
