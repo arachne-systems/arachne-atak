@@ -7,11 +7,13 @@ internal class WorkspaceAdapters(
     private val resource: WorkspaceResourceCall,
     private val publish: WorkspacePublisher,
     private val pttReceive: (JSONObject, (Boolean) -> Unit) -> Unit = { _, complete -> complete(false) },
+    private val observePli: (ByteArray, ByteArray, String, org.w3c.dom.Document) -> Unit = { _, _, _, _ -> },
 ) : AutoCloseable {
     private class Bound(@Volatile private var record: LocalWorkspace, publish: WorkspacePublisher,
-                        deliveries: NativeDeliveryDeduplicator, resource: WorkspaceResourceCall) : AutoCloseable {
+                        deliveries: NativeDeliveryDeduplicator, resource: WorkspaceResourceCall,
+                        observePli: (ByteArray, ByteArray, String, org.w3c.dom.Document) -> Unit) : AutoCloseable {
         val resources = WorkspaceResources(com.atakmap.android.maps.MapView.getMapView().context, record, publish, resource)
-        val native = WorkspaceNativeAdapter(record, publish, resources, deliveries)
+        val native = WorkspaceNativeAdapter(record, publish, resources, deliveries, observePli)
         val packages = WorkspaceMissionPackages(record, resources, publish, native.routing::selectedMembers)
         private var legacyCot: WorkspaceCotAdapter? = null
         val feeds = FeedMapAdapter()
@@ -54,7 +56,7 @@ internal class WorkspaceAdapters(
         for (key in connected.keys.toList()) if (key !in keep) connected.remove(key)?.close()
         for (view in state.connected) {
             val record = checkNotNull(view.active)
-            val bound = connected.getOrPut(record.id.toList()) { Bound(record, publish, nativeDeliveries, resource) }
+            val bound = connected.getOrPut(record.id.toList()) { Bound(record, publish, nativeDeliveries, resource, observePli) }
             bound.update(record)
             bound.resources.members(view.members)
             bound.native.members(view.members)

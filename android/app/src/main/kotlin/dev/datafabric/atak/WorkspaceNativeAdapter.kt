@@ -13,7 +13,8 @@ internal typealias WorkspacePublisher = (ByteArray, String, ByteArray, List<Byte
 /** One device-local native stream per saved workspace. Native application
  * composition, parsing and chat persistence remain owned by ATAK. */
 internal class WorkspaceNativeAdapter(@Volatile private var record: LocalWorkspace, private val publish: WorkspacePublisher,
-                                      resources: WorkspaceResources, private val deliveries: NativeDeliveryDeduplicator) : AutoCloseable {
+                                      resources: WorkspaceResources, private val deliveries: NativeDeliveryDeduplicator,
+                                      private val observePli: (ByteArray, ByteArray, String, org.w3c.dom.Document) -> Unit = { _, _, _, _ -> }) : AutoCloseable {
     private val member = checkNotNull(record.memberId).copyOf()
     private val workspace = record.id.copyOf()
     private val selfUid = MapView.getDeviceUid()
@@ -101,6 +102,7 @@ internal class WorkspaceNativeAdapter(@Volatile private var record: LocalWorkspa
                 if (sentChats.size > 1024) sentChats.remove(sentChats.first())
             }
         }
+        if (publication.topic == "atak/native/v1/pli") observePli(workspace, member, selfUid, document)
         val feedbackType = if (explicit) "" else type
         val accepted = publish(workspace, publication.topic, publication.bytes, publication.recipients, publication.current) { result ->
             result.onSuccess { report ->
@@ -199,6 +201,7 @@ internal class WorkspaceNativeAdapter(@Volatile private var record: LocalWorkspa
             }
             if (chat == null && !receipt) {
                 val uid = root.getAttribute("uid")
+                if (topic == "atak/native/v1/pli") observePli(workspace, author, uid, document)
                 Log.i("Arachne", "WORKSPACE_NATIVE_HANDOFF slot=${record.slot} topic=$topic uid=$uid")
                 if (BuildConfig.DEBUG) main.postDelayed({
                     if (!closed) Log.i("Arachne", "WORKSPACE_NATIVE_MAP_ITEM slot=${record.slot} topic=$topic uid=$uid present=${MapView.getMapView().rootGroup.deepFindUID(uid) != null}")

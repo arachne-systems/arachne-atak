@@ -1394,7 +1394,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
     private fun feedControl(record: LocalWorkspace, feed: FeedView, busy: Boolean) = android.widget.Switch(context).apply {
         contentDescription = "Receive ${feed.name} in ${record.name}"
         isChecked = feed.enabled
-        isEnabled = !busy && memberConnectionActive && feed.format == "adsb.lol.aircraft.v1"
+        isEnabled = !busy && memberConnectionActive && FeedMapAdapter.supportsMapFormat(feed.format)
         ArachneStyle.choice(this)
         var resetting = false
         setOnCheckedChangeListener { _, enabled ->
@@ -2060,7 +2060,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
                     ArachneSignal(context, if (feed.available) "Available" else "Source unavailable",
                         if (feed.available) ArachneSignal.State.ACTIVE else ArachneSignal.State.WAITING)),
                 Ui.toggle(context, "Receive this feed", "Save this device’s subscription in ${record.name}.", feedControl(record, feed, state.busy)),
-                if (feed.format == "adsb.lol.aircraft.v1") Ui.action(context, "Show on ATAK map", UiAction.PRIMARY) {
+                if (FeedMapAdapter.supportsMapFormat(feed.format)) Ui.action(context, "Show on ATAK map", UiAction.PRIMARY) {
                     val latest = memberState?.takeIf { it.active?.slot == record.slot }?.feeds?.find { it.topic == feed.topic }
                     val adapters = workspaceAdapters
                     if (latest?.enabled == true && adapters != null) adapters.showFeed(record.id, feed.topic) { shown ->
@@ -2646,6 +2646,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
                 workspaces?.publish(workspace, topic, bytes, recipients, current, complete) == true
             },
             pttReceive = bridge::receive,
+            observePli = bridge::observePli,
         )
         workspaceAdapters = adapters
         var displayedRevision = 0L // Accessed only on the main thread.

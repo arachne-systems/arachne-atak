@@ -94,6 +94,8 @@ internal class PttWorkspaceBridge(
     private val tickets = ConcurrentHashMap<String, Ticket>()
     private val pending = ConcurrentHashMap<String, Pending>()
     private val floorPreferences = context.applicationContext.getSharedPreferences("ptt-floor-authority", Context.MODE_PRIVATE)
+    private val talkerMap = if (BuildConfig.DEBUG) PttTalkerMap() else null
+    private val localMediaSequence = java.util.concurrent.atomic.AtomicLong()
     private val floorLock = Any()
     private var floorWorkspace = ""
     private var floorCoordinator = ""
@@ -123,6 +125,7 @@ internal class PttWorkspaceBridge(
         val previous = scope
         if (sameScope(next, previous)) return
         scope = next
+        talkerMap?.bind(next?.workspace, next?.members?.associate { it.id to it.name }.orEmpty())
         synchronized(floorLock) {
             if (next?.workspace != floorWorkspace || next?.floorCoordinator.orEmpty() != floorCoordinator)
                 restoreFloor(next?.workspace.orEmpty(), next?.floorCoordinator.orEmpty())
@@ -139,6 +142,9 @@ internal class PttWorkspaceBridge(
             }
         }
     }
+
+    fun observePli(workspace: ByteArray, member: ByteArray, uid: String, document: org.w3c.dom.Document) =
+        talkerMap?.position(workspace, member, uid, document)
 
     fun receive(publication: JSONObject, complete: (Boolean) -> Unit) {
         val topic = publication.optString("topic")
@@ -188,6 +194,7 @@ internal class PttWorkspaceBridge(
             }
             return
         }
+        talkerMap?.media(active.workspace, author, sequence, payload)
         val connectedPeer = peer
         if (connectedPeer == null) {
             Log.i("Arachne", "PTT_PUBLICATION_DROPPED reason=ptt_not_attached")
@@ -215,6 +222,7 @@ internal class PttWorkspaceBridge(
     override fun close() {
         if (closed) return
         closed = true
+        talkerMap?.close()
         runCatching { server.close() }
         disconnect(peer)
         timer.shutdownNow()
@@ -299,6 +307,9 @@ internal class PttWorkspaceBridge(
             val response = result.fold(
                 onSuccess = { report ->
                 val outcome = WorkspaceData.outcome(report)
+                    if (outcome.queued && !outcome.uncertain) {
+                        talkerMap?.media(active.workspace, active.member, localMediaSequence.incrementAndGet(), payload)
+                    }
                     JSONObject().put("op", "response").put("id", id)
                         .put("accepted", outcome.queued && !outcome.uncertain && outcome.failed == 0)
                         .put("queued", outcome.queued).put("remote_accepted", outcome.remoteAccepted)
