@@ -120,6 +120,17 @@ fun main() {
 
     // Source scan: the old one-ticket "Push to talk" launch path is replaced, not kept beside the new one.
     val root = findRepoRoot()
+    val manifest = File(root, "android/app/src/main/AndroidManifest.xml").readText()
+    val scanner = manifest.substringAfter("android:name=\".InvitationScannerActivity\"").substringBefore("/>")
+    check("android:exported=\"false\"" in scanner) {
+        "the invitation scanner is internal UI and must not be launchable by another app"
+    }
+    check("android:allowBackup=\"false\"" in manifest) {
+        "Android backup must stay disabled for workspace and identity state"
+    }
+    check("android:fullBackupContent=\"false\"" in manifest && "@xml/data_extraction_rules" in manifest) {
+        "legacy backup and Android 12+ device transfer must both stay disabled"
+    }
     val bridge = File(root, "android/app/src/main/kotlin/dev/datafabric/atak/PttWorkspaceBridge.kt").readText()
     check("PttLinkProtocol.answersRequest(protocol)" in bridge) {
         "handleRequestOffers must gate on PttLinkProtocol.answersRequest, not re-implement the comparison inline"
