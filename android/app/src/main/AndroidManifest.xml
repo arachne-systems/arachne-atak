@@ -8,7 +8,8 @@
     <uses-permission android:name="dev.arachne.atak.permission.OPEN_INVITATION" />
     <queries><package android:name="com.atakmap.app.civ" /></queries>
     <!-- ATAK tints plugin icons; use transparent artwork so the opaque brand PNG cannot become a white square. -->
-    <application android:allowBackup="false" android:label="Arachne"
+    <application android:allowBackup="false" android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules" android:label="Arachne"
         android:icon="@drawable/arachne_toolbar_icon" android:theme="@android:style/Theme.Material.NoActionBar">
         <activity android:name=".InvitationActivity" android:exported="true" android:excludeFromRecents="true">
             <intent-filter>
@@ -19,7 +20,7 @@
                 <data android:scheme="datafabric" android:host="join" />
             </intent-filter>
         </activity>
-        <activity android:name=".InvitationScannerActivity" android:exported="true"
+        <activity android:name=".InvitationScannerActivity" android:exported="false"
             android:excludeFromRecents="true" />
         <meta-data android:name="plugin-api" android:value="${atakApiVersion}" />
         <meta-data android:name="app_desc" android:value="Decentralized workspace fabric" />
