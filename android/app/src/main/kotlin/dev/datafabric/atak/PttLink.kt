@@ -46,7 +46,10 @@ internal object PttLinkProtocol {
  * another workspace's. A ticket is single-use and rejected once expired.
  * No Android dependency, so this is checkable on the host JVM; `now` is always
  * supplied by the caller so a check can drive the clock deterministically. */
-internal class PttTicketStore(private val nextToken: () -> String = ::randomLinkToken) {
+internal class PttTicketStore(
+    private val nextToken: () -> String = ::randomLinkToken,
+    private val maxOutstanding: Int = 256,
+) {
     private data class Ticket(val workspace: String, val expiresAt: Long)
 
     private val byToken = LinkedHashMap<String, Ticket>()
@@ -54,7 +57,16 @@ internal class PttTicketStore(private val nextToken: () -> String = ::randomLink
 
     @Synchronized
     fun issue(workspace: String, now: Long, lifetimeMs: Long = PttLinkProtocol.OFFER_TICKET_LIFETIME_MS): String {
+        require(maxOutstanding > 0)
+        byToken.entries.removeAll { (_, ticket) ->
+            (ticket.expiresAt < now).also { expired -> if (expired) tokenByWorkspace.remove(ticket.workspace) }
+        }
         tokenByWorkspace.remove(workspace)?.let(byToken::remove)
+        while (byToken.size >= maxOutstanding) {
+            val (oldToken, oldTicket) = byToken.entries.first()
+            byToken.remove(oldToken)
+            tokenByWorkspace.remove(oldTicket.workspace, oldToken)
+        }
         val token = nextToken()
         byToken[token] = Ticket(workspace, now + lifetimeMs)
         tokenByWorkspace[workspace] = token
@@ -65,10 +77,10 @@ internal class PttTicketStore(private val nextToken: () -> String = ::randomLink
     @Synchronized
     fun consume(token: String, workspace: String, now: Long): Boolean {
         val ticket = byToken[token] ?: return false
-        if (ticket.workspace != workspace || ticket.expiresAt < now) return false
+        if (ticket.workspace != workspace) return false
         byToken.remove(token)
         tokenByWorkspace.remove(workspace, token)
-        return true
+        return ticket.expiresAt >= now
     }
 
     /** Drops a workspace's outstanding ticket (e.g. it stopped being connected) without touching others. */

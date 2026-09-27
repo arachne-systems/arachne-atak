@@ -9,7 +9,7 @@ import java.io.File
 fun main() {
     fun store(): PttTicketStore {
         var next = 0
-        return PttTicketStore { "token-${next++}" }
+        return PttTicketStore(nextToken = { "token-${next++}" })
     }
 
     val w1 = "1".repeat(64)
@@ -80,6 +80,19 @@ fun main() {
         tickets.invalidate(w1)
         check(!tickets.consume(ticketW1, w1, now)) { "invalidate() must drop that workspace's ticket" }
         check(tickets.consume(ticketW2, w2, now)) { "invalidate() must not affect other workspaces" }
+    }
+
+    // A compromised or buggy plugin cannot retain an unbounded number of live tickets.
+    run {
+        var next = 0
+        val tickets = PttTicketStore(nextToken = { "bounded-${next++}" }, maxOutstanding = 2)
+        val first = tickets.issue(w1, 0L)
+        val second = tickets.issue(w2, 0L)
+        val thirdWorkspace = "3".repeat(64)
+        val third = tickets.issue(thirdWorkspace, 0L)
+        check(!tickets.consume(first, w1, 0L)) { "the oldest ticket must be evicted at the bound" }
+        check(tickets.consume(second, w2, 0L)) { "newer tickets must survive bounded eviction" }
+        check(tickets.consume(third, thirdWorkspace, 0L)) { "the newest ticket must survive bounded eviction" }
     }
 
     // The real (non-test) token generator produces 64 lowercase hex characters.
@@ -202,7 +215,7 @@ fun main() {
     }
 
     println("PASS: PTT link v2 tickets are per-workspace (independent issue/consume/reissue/invalidate), " +
-        "reject expired and reused tickets, the real token is 64 lowercase hex, offer extras carry all 8 " +
+        "bounded, reject expired and reused tickets, the real token is 64 lowercase hex, offer extras carry all 8 " +
         "typed fields, protocol mismatch is rejected by answersRequest, OFFER/GONE share sender identity " +
         "on API 34+ while still carrying the proof PendingIntent on every API level, GONE fires only from " +
         "the saved record's ended flag (never a derived status string, transient disconnect, or plugin " +
