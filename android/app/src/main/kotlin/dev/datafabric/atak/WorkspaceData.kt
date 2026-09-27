@@ -18,12 +18,13 @@ internal class WorkspaceData(
     private val received: ((JSONObject, (Boolean) -> Unit) -> Unit)?,
     private val deliveryClock: () -> Long = { android.os.SystemClock.elapsedRealtime() },
     private val reachablePeers: () -> List<ByteArray> = { emptyList() },
+    private val deliveryWake: (String) -> Unit = {},
     private val continuity: (String?) -> Unit = {}
 ) {
     companion object {
         private const val CONTINUITY_INTERVAL_MS = 30_000L
         private val topicPattern = Regex("[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*")
-        private val retainedEventTopics = setOf("chat/messages/v1", "atak/native/v1/chat")
+        private val retainedEventTopics = setOf("chat/messages/v1", "atak/native/v1/chat", "streams/ptt")
         fun validTopic(topic: String) = topic.length in 1..128 && topicPattern.matches(topic)
         fun outcome(report: JSONObject): PublicationOutcome {
             if (report.has("network_error")) return PublicationOutcome(0, 0, true, false)
@@ -72,6 +73,11 @@ internal class WorkspaceData(
     private val pendingReachableHistory = ArrayDeque<ByteArray>()
     private val pendingReachableCurrent = ArrayDeque<Pair<String, ByteArray>>()
     private fun retainedInterests() = topics.filter { it in retainedEventTopics }
+    private fun recoveryLabel(selected: Collection<String> = retainedInterests()): String = when {
+        selected == listOf("streams/ptt") -> "PTT recordings"
+        "streams/ptt" in selected -> "workspace updates"
+        else -> "Chat updates"
+    }
     private fun currentSelection(authority: ByteArray?, preferredTopic: String? = null): Pair<String, ByteArray>? {
         authority ?: return null
         val authorityKey = authority.joinToString("") { "%02x".format(it.toInt() and 255) }
@@ -194,7 +200,7 @@ internal class WorkspaceData(
                 retained && peer != null -> {
                     preferCurrentRecovery = selection != null
                     val selected = retainedInterests()
-                    continuity("Checking for missed Chat updates…")
+                    continuity("Checking for missed ${recoveryLabel(selected)}…")
                     val pending = checkNotNull(call(JSONObject().put("op", "discover_recovery_cutoff")
                         .put("peer", peer).put("revision", revision).put("topics", JSONArray(selected))))
                     check(pending.getString("state") == "recovery_cutoff_pending")
@@ -229,6 +235,7 @@ internal class WorkspaceData(
                     val selected = result.getJSONArray("topics").let { values ->
                         (0 until values.length()).map { values.getString(it) }
                     }
+                    val label = recoveryLabel(selected)
                     if (selected.any { it !in topics || it !in retainedEventTopics }) {
                         continuity(null)
                         return
@@ -239,11 +246,11 @@ internal class WorkspaceData(
                             Log.w("Arachne", "WORKSPACE_RECOVERY_UNAVAILABLE reason=publisher_rollback")
                         }
                         acceptedThrough < retainedAfter -> {
-                            continuity("Some earlier Chat updates have expired and are no longer available.")
+                            continuity("Some earlier $label have expired and are no longer available.")
                             Log.w("Arachne", "WORKSPACE_RECOVERY_UNAVAILABLE reason=history_expired after=$retainedAfter")
                         }
                         head > acceptedThrough -> {
-                            continuity("Missed Chat updates found. Recovering now…")
+                            continuity("Missed $label found. Recovering now…")
                             val request = JSONObject().put("op", "fetch_recovery_range")
                                 .put("author", result.getJSONArray("author")).put("revision", revision)
                                 .put("topics", JSONArray(selected))
@@ -254,7 +261,7 @@ internal class WorkspaceData(
                             val started = call(request)
                             rangeRecoveryPending = started?.optString("state") in setOf("recovery_range_pending", "recovery_source_waiting")
                             if (started?.getString("state") == "recovery_source_waiting") {
-                                continuity("Waiting for a connected member with the missing Chat updates.")
+                                continuity("Waiting for a connected member with the missing $label.")
                                 Log.i("Arachne", "WORKSPACE_RECOVERY_WAITING")
                             }
                         }
@@ -271,6 +278,7 @@ internal class WorkspaceData(
             // The publisher may be offline while another authorized member holds
             // an exact publisher-signed range beginning at our durable cursor.
             val selected = retainedInterests()
+            val label = recoveryLabel(selected)
             val peer = lastRecoveryPeer
             val pending = try {
                 if (peer == null || selected.isEmpty()) null else call(JSONObject()
@@ -279,7 +287,7 @@ internal class WorkspaceData(
             } catch (fallback: Exception) { null }
             if (pending?.getString("state") == "recovery_range_pending") {
                 rangeRecoveryPending = true
-                continuity("Checking connected members for missed Chat updates…")
+                continuity("Checking connected members for missed $label…")
                 Log.i("Arachne", "WORKSPACE_RECOVERY_HOLDER_STARTED")
             } else {
                 rangeRecoveryPending = false
@@ -290,6 +298,7 @@ internal class WorkspaceData(
     }
 
     private fun recover() {
+        val label = recoveryLabel()
         pollCutoff()
         val current = try { call(JSONObject().put("op", "poll_current_view")) }
             catch (error: Exception) {
@@ -332,14 +341,14 @@ internal class WorkspaceData(
             }
         if (reply != null) {
             if (reply.getString("state") == "recovery_range_ready") {
-                continuity("Recovering missed Chat updates…")
+                continuity("Recovering missed $label…")
                 // Saving/adoption errors propagate: close and restore authoritative disk state.
                 val staged = try { checkNotNull(call(JSONObject().put("op", "stage_recovery_range")
                     .put("retain_until", System.currentTimeMillis() / 1000 + 3600))) }
                 catch (error: Exception) {
                     call(JSONObject().put("op", "cancel_recovery_range"))
                     rangeRecoveryPending = false
-                    continuity("Missed Chat updates could not be verified. Keeping saved data.")
+                    continuity("Missed $label could not be verified. Keeping saved data.")
                     Log.w("Arachne", "WORKSPACE_RECOVERY_UNAVAILABLE reason=staging_rejected")
                     return
                 }
@@ -360,7 +369,7 @@ internal class WorkspaceData(
                 Log.i("Arachne", "WORKSPACE_RECOVERY_UNCONFIRMED")
             } else {
                 rangeRecoveryPending = false
-                continuity("Missed Chat updates are unavailable from connected members.")
+                continuity("Missed $label are unavailable from connected members.")
                 Log.w("Arachne", "WORKSPACE_RECOVERY_UNAVAILABLE reason=${reply.optString("reason")}")
             }
         }
@@ -459,9 +468,12 @@ internal class WorkspaceData(
             check(key !in delivering && key !in deferred) { "Runtime selected a deferred delivery stream" }
             val delivery = Delivery(pending, scope)
             delivering[key] = delivery
-            val replied = java.util.concurrent.atomic.AtomicBoolean(false)
-            try { consumer(pending) { accepted ->
-                if (replied.compareAndSet(false, true)) delivery.completion.set(if (accepted) 1 else 2)
+                val replied = java.util.concurrent.atomic.AtomicBoolean(false)
+                try { consumer(pending) { accepted ->
+                if (replied.compareAndSet(false, true)) {
+                    delivery.completion.set(if (accepted) 1 else 2)
+                    deliveryWake(pending.getString("topic"))
+                }
             } }
             catch (error: Exception) {
                 // A thrown importer/storage error is not proof the publication

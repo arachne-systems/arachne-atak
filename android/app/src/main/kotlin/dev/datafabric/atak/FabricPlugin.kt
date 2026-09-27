@@ -35,12 +35,20 @@ import gov.tak.platform.marshal.MarshalManager
 class FabricPlugin(controller: IServiceController) : IPlugin {
     @Volatile private var workspaces: WorkspaceConnections? = null
     private var workspaceAdapters: WorkspaceAdapters? = null
+    @Volatile private var pttBridge: PttWorkspaceBridge? = null
     private var nearbyInvitations: NearbyInvitations? = null
     private val invitationReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(host: android.content.Context, intent: android.content.Intent) {
             if (intent.action != InvitationActivity.ACTION) return
             val link = intent.getStringExtra(android.content.Intent.EXTRA_TEXT) ?: return
             if (openInvitation(link)) resultCode = android.app.Activity.RESULT_OK
+        }
+    }
+    // plugin-link-v2: the Arachne PTT app asks whether any workspace wants to link.
+    private val requestOffersReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(host: android.content.Context, intent: android.content.Intent) {
+            if (intent.action != PttLinkProtocol.ACTION_REQUEST_OFFERS) return
+            pttBridge?.handleRequestOffers(intent)
         }
     }
     private fun openInvitation(link: String): Boolean {
@@ -1315,6 +1323,9 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
             if (record.joinPeer == null && !record.ended) actions.add("Invitations" to { navigate(Screen.INVITATIONS) })
         }
         if (!record.ended && current != null) {
+            // Every connected workspace can be linked now (plugin-link-v2 keeps one
+            // ticket per workspace), not only the one currently open in the UI.
+            actions.add("Push to talk" to { launchPttFromWorkspace(record) })
             actions.add("Pause workspace" to { performOperation("Pause workspace") { workspaces?.pause(record.id) }; Unit })
             val enabled = record.id.toList() in latest.publishing
             actions.add((if (enabled) "Turn workspace sharing off" else "Turn workspace sharing on") to {
@@ -1335,6 +1346,23 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
         ArachneStyle.dialog(MapView.getMapView().context, pagePane).setTitle(record.name)
             .setItems(actions.map { it.first }.toTypedArray()) { _, index -> actions[index].second() }
             .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun launchPttFromWorkspace(record: LocalWorkspace) {
+        val workspace = Hex.encode(record.id)
+        if (pttBridge?.offerWorkspace(workspace) != true) {
+            toast("Select a connected workspace before opening PTT.")
+            return
+        }
+        val intent = android.content.Intent().setClassName(PttLinkProtocol.PTT_PACKAGE, PttLinkProtocol.PTT_MAIN_ACTIVITY)
+            .setAction(PttLinkProtocol.ACTION_OPEN_WORKSPACE)
+            .putExtra(PttLinkProtocol.EXTRA_WORKSPACE, workspace)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            MapView.getMapView().context.startActivity(intent)
+        } catch (_: android.content.ActivityNotFoundException) {
+            toast("Install Arachne PTT to use voice in this workspace.")
+        }
     }
     private val memberList by lazy { LinearLayout(context).apply { orientation = LinearLayout.VERTICAL } }
     private val workspaceList by lazy { LinearLayout(context).apply { orientation = LinearLayout.VERTICAL } }
@@ -1410,7 +1438,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
     private fun feedControl(record: LocalWorkspace, feed: FeedView, busy: Boolean) = android.widget.Switch(context).apply {
         contentDescription = "Receive ${feed.name} in ${record.name}"
         isChecked = feed.enabled
-        isEnabled = !busy && memberConnectionActive && feed.format == "adsb.lol.aircraft.v1"
+        isEnabled = !busy && memberConnectionActive && FeedMapAdapter.supportsMapFormat(feed.format)
         ArachneStyle.choice(this)
         var resetting = false
         setOnCheckedChangeListener { _, enabled ->
@@ -2076,7 +2104,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
                     ArachneSignal(context, if (feed.available) "Available" else "Source unavailable",
                         if (feed.available) ArachneSignal.State.ACTIVE else ArachneSignal.State.WAITING)),
                 Ui.toggle(context, "Receive this feed", "Save this device’s subscription in ${record.name}.", feedControl(record, feed, state.busy)),
-                if (feed.format == "adsb.lol.aircraft.v1") Ui.action(context, "Show on ATAK map", UiAction.PRIMARY) {
+                if (FeedMapAdapter.supportsMapFormat(feed.format)) Ui.action(context, "Show on ATAK map", UiAction.PRIMARY) {
                     val latest = memberState?.takeIf { it.active?.slot == record.slot }?.feeds?.find { it.topic == feed.topic }
                     val adapters = workspaceAdapters
                     if (latest?.enabled == true && adapters != null) adapters.showFeed(record.id, feed.topic) { shown ->
@@ -2637,7 +2665,7 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
     // ATAK tints toolbar icons; keep this transparent mark separate from the opaque brand PNG.
     private val button = ToolbarItem.Builder(
         "Arachne",
-        MarshalManager.marshal(ArachneStyle.drawable(R.drawable.arachne_toolbar_icon), Drawable::class.java, Bitmap::class.java)
+        MarshalManager.marshal(ArachneStyle.toolbarIcon(context), Drawable::class.java, Bitmap::class.java)
     ).setIdentifier("dev.arachne.atak").setListener(object : ToolbarItemAdapter() {
         override fun onClick(item: ToolbarItem) { showPane() }
     }).build()
@@ -2651,16 +2679,26 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
                 Log.i("Arachne", "NATIVE_HTTP_RECOVERY_COMPLETE failures=$failures")
             } catch (error: Exception) { Log.w("Arachne", "NATIVE_HTTP_RECOVERY_FAILED", error) }
         }, "arachne-native-http-recovery").start()
-        val adapters = WorkspaceAdapters({ workspace, request, complete ->
-            workspaces?.resource(workspace, request, complete) == true
-        }) { workspace, topic, bytes, recipients, current, complete ->
-            workspaces?.publish(workspace, topic, bytes, recipients, current, complete) == true
+        val bridge = PttWorkspaceBridge(MapView.getMapView().context) { workspace, topic, bytes, complete ->
+            workspaces?.publish(workspace, topic, bytes, completed = complete) == true
         }
+        pttBridge = bridge
+        val adapters = WorkspaceAdapters(
+            resource = { workspace, request, complete ->
+                workspaces?.resource(workspace, request, complete) == true
+            },
+            publish = { workspace, topic, bytes, recipients, current, complete ->
+                workspaces?.publish(workspace, topic, bytes, recipients, current, complete) == true
+            },
+            pttReceive = bridge::receive,
+            observePli = bridge::observePli,
+        )
         workspaceAdapters = adapters
         var displayedRevision = 0L // Accessed only on the main thread.
         workspaces = WorkspaceConnections(MapView.getMapView().context,
-            CotTopics.nativeDefaults + WorkspaceResources.topics + WorkspaceMissionPackages.topics, adapters::receive) { state ->
+            CotTopics.nativeDefaults + WorkspaceResources.topics + WorkspaceMissionPackages.topics + "streams/ptt", adapters::receive) { state ->
             adapters.bind(state)
+            bridge.update(state)
             mainHandler.post {
                 if (generation == startedGeneration && state.revision > displayedRevision) {
                     displayedRevision = state.revision
@@ -2691,6 +2729,12 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
         } else {
             receiverContext.registerReceiver(invitationReceiver, filter, InvitationActivity.PERMISSION, mainHandler)
         }
+        val requestOffersFilter = android.content.IntentFilter(PttLinkProtocol.ACTION_REQUEST_OFFERS)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            receiverContext.registerReceiver(requestOffersReceiver, requestOffersFilter, android.content.Context.RECEIVER_EXPORTED)
+        } else {
+            receiverContext.registerReceiver(requestOffersReceiver, requestOffersFilter)
+        }
         AtakBroadcast.getInstance().registerReceiver(attentionReceiver, AtakBroadcast.DocumentedIntentFilter(attentionAction))
         if (BuildConfig.DEBUG) debugControl("install")
         ui.addToolbarItem(button)
@@ -2715,10 +2759,13 @@ class FabricPlugin(controller: IServiceController) : IPlugin {
         nearbyInvitations?.close()
         nearbyInvitations = null
         MapView.getMapView().context.unregisterReceiver(invitationReceiver)
+        MapView.getMapView().context.unregisterReceiver(requestOffersReceiver)
         if (BuildConfig.DEBUG) debugControl("uninstall")
         AtakBroadcast.getInstance().unregisterReceiver(attentionReceiver)
         attentionNotificationId?.let { NotificationUtil.getInstance().clearNotification(it) }
         currentAttentionKeys = emptySet(); notifiedAttentionKeys = emptySet()
+        pttBridge?.close()
+        pttBridge = null
         workspaceAdapters?.close()
         workspaceAdapters = null
         workspaces?.let { owners ->

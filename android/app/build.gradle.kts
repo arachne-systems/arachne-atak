@@ -37,6 +37,12 @@ extra["isDevKitEnabled"] = object : groovy.lang.Closure<Boolean>(project) {
 }
 apply(plugin = "atak-takdev-plugin")
 repositories { google(); mavenCentral() }
+val fabricJniLibs = file(providers.gradleProperty("fabricJniLibs").getOrElse("../../.cache/jniLibs"))
+listOf("arm64-v8a", "x86_64").forEach { abi ->
+    require(file("$fabricJniLibs/$abi/libfabric_android.so").isFile) {
+        "Missing $abi/libfabric_android.so under $fabricJniLibs; run ../scripts/build-plugin.sh first"
+    }
+}
 // Keep the release runtime inventory reproducible and available to dependency scans.
 configurations.matching { it.name == "civReleaseRuntimeClasspath" }.configureEach {
     resolutionStrategy.activateDependencyLocking()
@@ -45,7 +51,7 @@ android {
     namespace = "dev.arachne.atak"
     useLibrary("org.apache.http.legacy")
     buildFeatures { buildConfig = true }
-    sourceSets.getByName("main").jniLibs.srcDir(providers.gradleProperty("fabricJniLibs").getOrElse("../../.cache/jniLibs"))
+    sourceSets.getByName("main").jniLibs.srcDir(fabricJniLibs)
     packaging { jniLibs.useLegacyPackaging = true }
     bundle { storeArchive { enable = false } }
     flavorDimensions += "application"
@@ -93,3 +99,26 @@ android {
 }
 kotlin { jvmToolchain(17) }
 dependencies { implementation("com.google.zxing:core:3.5.4") }
+
+val verifyToolbarIconContract = tasks.register("verifyToolbarIconContract") {
+    val androidNamespace = "http://schemas.android.com/apk/res/android"
+    val manifestFile = file("src/main/AndroidManifest.xml")
+    val pluginFile = file("src/main/kotlin/dev/datafabric/atak/FabricPlugin.kt")
+    val styleFile = file("src/main/kotlin/dev/datafabric/atak/ArachneStyle.kt")
+    val iconFile = file("src/main/res/drawable/arachne_toolbar_icon.xml")
+    inputs.files(manifestFile, pluginFile, styleFile, iconFile)
+    doLast {
+        val factory = javax.xml.parsers.DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+        val appIcon = factory.newDocumentBuilder().parse(manifestFile).getElementsByTagName("application")
+            .item(0).attributes.getNamedItemNS(androidNamespace, "icon")?.nodeValue
+        check(appIcon == "@drawable/arachne_toolbar_icon") { "ATAK's manifest icon must use transparent toolbar artwork" }
+        check(Regex("MarshalManager\\.marshal\\(\\s*ArachneStyle\\.toolbarIcon\\(context\\)")
+            .containsMatchIn(pluginFile.readText())) { "ToolbarItem must use ArachneStyle.toolbarIcon()" }
+        check(Regex("fun toolbarIcon\\(context: Context\\).*R\\.drawable\\.arachne_toolbar_icon")
+            .containsMatchIn(styleFile.readText())) { "ArachneStyle.toolbarIcon() must resolve the transparent vector" }
+        val root = factory.newDocumentBuilder().parse(iconFile).documentElement
+        check(root.tagName == "vector" && !root.hasAttributeNS(androidNamespace, "background") &&
+            root.getElementsByTagName("path").length > 0) { "Toolbar artwork must be a non-empty transparent vector" }
+    }
+}
+tasks.named("preBuild").configure { dependsOn(verifyToolbarIconContract) }

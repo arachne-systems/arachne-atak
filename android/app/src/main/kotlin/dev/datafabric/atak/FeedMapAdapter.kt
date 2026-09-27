@@ -11,8 +11,39 @@ import com.atakmap.coremap.cot.event.CotEvent
 import org.json.JSONObject
 import java.time.Instant
 
-/** ADSB.lol observation-to-map adapter. The fabric never interprets these fields. */
+internal data class FeedMapObservation(
+    val event: CotEvent,
+    val uid: String,
+    val identity: String,
+    val observedAt: Long,
+    val expiresAt: Long,
+    val latitude: Double,
+    val longitude: Double,
+)
+
+/** Rescope authenticated feed CoT IDs before passing events into ATAK. */
+internal fun parseCotFeedObservation(
+    payload: ByteArray,
+    workspace: ByteArray,
+    member: ByteArray,
+    topic: String,
+    now: Long,
+): FeedMapObservation {
+    val document = NativeCotProjection.parse(payload)
+    val projected = projectCotFeed(document, workspace, member, topic, now)
+    val event = CotEvent.parse(CotXml.decode(NativeCotProjection.encode(document)))
+    require(event.isValid)
+    return FeedMapObservation(event, projected.uid, projected.identity, projected.observedAt,
+        projected.expiresAt, projected.latitude, projected.longitude)
+}
+
+/** Maps selected CoT and legacy ADS-B feeds. */
 internal class FeedMapAdapter : AutoCloseable {
+    companion object {
+        fun supportsMapFormat(format: String): Boolean =
+            format == "adsb.lol.aircraft.v1" || format == "cot.event.v1"
+    }
+
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var workspace: ByteArray? = null
     @Volatile private var selected = emptySet<String>()
@@ -55,29 +86,38 @@ internal class FeedMapAdapter : AutoCloseable {
             val topic = publication.getString("topic")
             val member = bytes("member")
             require(topic.startsWith("feeds/" + member.joinToString("") { "%02x".format(it.toInt() and 255) } + "/"))
-            require(topic in selected && publication.getString("feed_format") == "adsb.lol.aircraft.v1")
-            val value = WorkspaceFeeds.json(bytes("payload"))
-            val identity = value.getString("hex").also { require(it.matches(Regex("~?[0-9a-f]{6}"))) }
-            val lat = value.getDouble("lat").also { require(it.isFinite() && it in -90.0..90.0) }
-            val lon = value.getDouble("lon").also { require(it.isFinite() && it in -180.0..180.0) }
-            val observed = value.getLong("observed_at")
+            require(topic in selected)
             val now = System.currentTimeMillis()
-            require(observed in (now-60000)..(now+10000))
-            val altitude = if (value.has("alt_geom")) value.getDouble("alt_geom") * 0.3048 else 9999999.0
-            require(altitude.isFinite() && (altitude == 9999999.0 || altitude in -1000.0..100000.0))
-            val name = WorkspaceFeeds.label(value.optString("flight", identity).trim().ifEmpty { identity }, 80)
-            val uid = CotIdentity.receivedObject(scope, member, "$topic/$identity")
-            val time = Instant.ofEpochMilli(observed).toString()
-            val stale = Instant.ofEpochMilli(observed+60000).toString()
-            val event = CotEvent.parse("<event version=\"2.0\" uid=\"$uid\" type=\"a-n-A-C\" time=\"$time\" start=\"$time\" stale=\"$stale\" how=\"m-g\"><point lat=\"$lat\" lon=\"$lon\" hae=\"$altitude\" ce=\"9999999\" le=\"9999999\"/><detail><contact callsign=\"${TextUtils.htmlEncode(name)}\"/><remarks>ADSB.lol observation; unverified source report</remarks></detail></event>")
-            require(event.isValid)
+            val item = when (publication.getString("feed_format")) {
+                "cot.event.v1" -> parseCotFeedObservation(bytes("payload"), scope, member, topic, now)
+                "adsb.lol.aircraft.v1" -> {
+                    val value = WorkspaceFeeds.json(bytes("payload"))
+                    val identity = value.getString("hex").also { require(it.matches(Regex("~?[0-9a-f]{6}"))) }
+                    val lat = value.getDouble("lat").also { require(it.isFinite() && it in -90.0..90.0) }
+                    val lon = value.getDouble("lon").also { require(it.isFinite() && it in -180.0..180.0) }
+                    val observed = value.getLong("observed_at")
+                    require(observed in Math.subtractExact(now, 60_000)..Math.addExact(now, 10_000))
+                    val expires = Math.addExact(observed, 60_000)
+                    require(expires > now)
+                    val altitude = if (value.has("alt_geom")) value.getDouble("alt_geom") * 0.3048 else 9999999.0
+                    require(altitude.isFinite() && (altitude == 9999999.0 || altitude in -1000.0..100000.0))
+                    val name = WorkspaceFeeds.label(value.optString("flight", identity).trim().ifEmpty { identity }, 80)
+                    val uid = CotIdentity.receivedObject(scope, member, "$topic/$identity")
+                    val time = Instant.ofEpochMilli(observed).toString()
+                    val stale = Instant.ofEpochMilli(expires).toString()
+                    val event = CotEvent.parse("<event version=\"2.0\" uid=\"$uid\" type=\"a-n-A-C\" time=\"$time\" start=\"$time\" stale=\"$stale\" how=\"m-g\"><point lat=\"$lat\" lon=\"$lon\" hae=\"$altitude\" ce=\"9999999\" le=\"9999999\"/><detail><contact callsign=\"${TextUtils.htmlEncode(name)}\"/><remarks>ADSB.lol observation; unverified source report</remarks></detail></event>")
+                    require(event.isValid)
+                    FeedMapObservation(event, uid, identity, observed, expires, lat, lon)
+                }
+                else -> error("Unsupported feed format")
+            }
             main.post {
                 if (workspace?.contentEquals(scope) != true || topic !in selected) { completed(true); return@post }
-                if (tracks.size >= 512 && uid !in tracks) { Log.w("Arachne", "FEED_MAP_CAPACITY"); completed(true); return@post }
+                if (tracks.size >= 512 && item.uid !in tracks) { Log.w("Arachne", "FEED_MAP_CAPACITY"); completed(true); return@post }
                 try {
-                    CotMapComponent.getInternalDispatcher().dispatch(event, Bundle().apply { putString("from", "fabric") })
-                    tracks[uid] = Track(topic, observed+60000, lat, lon)
-                    Log.i("Arachne", "FEED_MAP_IMPORTED uid=$uid observation=$identity observed_at=$observed")
+                    CotMapComponent.getInternalDispatcher().dispatch(item.event, Bundle().apply { putString("from", "fabric") })
+                    tracks[item.uid] = Track(topic, item.expiresAt, item.latitude, item.longitude)
+                    Log.i("Arachne", "FEED_MAP_IMPORTED uid=${item.uid} observation=${item.identity} observed_at=${item.observedAt}")
                     completed(true)
                 } catch (error: Exception) { completed(false) }
             }

@@ -119,6 +119,11 @@ internal object IrohTransportSetting {
 
     fun read(context: Context) = IrohTransportSettings(torOnly(context), profile(context))
 
+    /** Default transport again (Automatic, not Tor-only). A rig reset calls this: "reset" means all Arachne state. */
+    fun resetToDefaults(context: Context) {
+        preferences(context).edit().clear().commit()
+    }
+
     fun setProfile(context: Context, profile: IrohTransportProfile) {
         preferences(context).edit().putString(PROFILE, profile.preferenceValue).apply()
     }

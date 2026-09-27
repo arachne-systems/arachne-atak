@@ -156,6 +156,20 @@ internal object NativeCotFramesCheck {
         val actor = CotIdentity.member(workspace, member)
         fun event(uid: String, type: String, detail: String) = "<event version='2.0' uid='$uid' type='$type' how='m-g' time='2026-09-09T22:00:00Z' start='2026-09-09T22:00:00Z' stale='2026-09-10T22:00:00Z'><point lat='38' lon='-77' hae='0' ce='10' le='10'/><detail>$detail</detail></event>".toByteArray()
         fun send(bytes: ByteArray, scope: ByteArray = workspace) = checkNotNull(NativeCotProjection.outgoing(NativeCotProjection.parse(bytes), scope, member, selfUid))
+        scenario("selected_cot_feeds_are_rescoped_for_aprs_and_adsb") {
+            val now = System.currentTimeMillis()
+            val topic = "feeds/${member.joinToString("") { "%02x".format(it.toInt() and 255) }}/${"34".repeat(16)}"
+            for (type in listOf("a-f-G-U-C", "a-n-A-C")) {
+                val time = java.time.Instant.ofEpochMilli(now).toString()
+                val stale = java.time.Instant.ofEpochMilli(now + 60_000).toString()
+                val payload = "<event version='2.0' uid='Arachne-feed-observation' type='$type' time='$time' start='$time' stale='$stale' how='m-g'><point lat='30.4' lon='-84.2' hae='9999999' ce='9999999' le='9999999'/><detail><contact callsign='Feed observation'/><remarks>Unverified source report</remarks></detail></event>".toByteArray()
+                val item = parseCotFeedObservation(payload, workspace, member, topic, now)
+                check(item.event.isValid && item.event.uid == item.uid)
+                check(item.uid.startsWith("dfl-") && item.uid != "Arachne-feed-observation")
+                check(item.latitude == 30.4 && item.longitude == -84.2)
+                check(item.expiresAt == now + 60_000)
+            }
+        }
         scenario("native_projection_preserves_atak_ids_and_scopes_wire_ids") {
             val pli = event(selfUid, "a-f-G-U-C", "<contact callsign='Field One' endpoint='10.0.2.15:4242:tcp'/><uid Droid='Field One'/><link uid='$selfUid' type='a-f-G-U-C' relation='p-p'/><ext:data xmlns:ext='urn:example' value='42'><ext:child><![CDATA[Text < & >]]></ext:child></ext:data>")
             val sent = send(pli)
